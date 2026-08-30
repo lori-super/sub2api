@@ -101,6 +101,13 @@
                 <p class="mt-1 text-xs leading-5 text-gray-600 dark:text-dark-300">
                   {{ t(`admin.upstreamPriceMonitor.overview.modeHint${configDraft.mode === 'auto_apply' ? 'Auto' : 'Observe'}`) }}
                 </p>
+                <p
+                  class="mt-2 inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-500/15 dark:text-blue-200"
+                  data-testid="observe-only-lock"
+                >
+                  <Icon name="lock" size="xs" />
+                  {{ t('admin.upstreamPriceMonitor.overview.observeOnlyLock') }}
+                </p>
               </div>
             </div>
             <div class="flex shrink-0 flex-wrap gap-2">
@@ -113,24 +120,6 @@
               >
                 <Icon name="play" size="sm" />
                 {{ creatingRun ? t('admin.upstreamPriceMonitor.overview.running') : t('admin.upstreamPriceMonitor.overview.runNow') }}
-              </button>
-              <button
-                v-if="latestApplicableRun"
-                type="button"
-                class="btn btn-secondary"
-                data-testid="apply-latest"
-                @click="requestRunAction('apply', latestApplicableRun)"
-              >
-                {{ t('admin.upstreamPriceMonitor.overview.apply') }}
-              </button>
-              <button
-                v-if="latestRollbackRun"
-                type="button"
-                class="btn btn-secondary text-amber-700 dark:text-amber-300"
-                data-testid="rollback-latest"
-                @click="requestRunAction('rollback', latestRollbackRun)"
-              >
-                {{ t('admin.upstreamPriceMonitor.overview.rollback') }}
               </button>
             </div>
           </div>
@@ -273,10 +262,20 @@
                 </div>
                 <div class="config-toggle-row">
                   <div>
-                    <p class="config-label">{{ t('admin.upstreamPriceMonitor.config.activeProbe') }}</p>
+                    <p class="config-label flex flex-wrap items-center gap-2">
+                      {{ t('admin.upstreamPriceMonitor.config.activeProbe') }}
+                      <span class="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-gray-500 dark:bg-dark-700 dark:text-dark-300">
+                        {{ t('admin.upstreamPriceMonitor.config.rolloutLocked') }}
+                      </span>
+                    </p>
                     <p class="config-hint">{{ t('admin.upstreamPriceMonitor.config.activeProbeHint') }}</p>
                   </div>
-                  <Toggle v-model="configDraft.active_probe_enabled" data-testid="config-active-probe" />
+                  <Toggle
+                    :model-value="false"
+                    disabled
+                    class="cursor-not-allowed opacity-50"
+                    data-testid="config-active-probe"
+                  />
                 </div>
               </div>
 
@@ -285,7 +284,9 @@
                   <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.mode') }}</span>
                   <select v-model="configDraft.mode" class="input mt-1.5" data-testid="config-mode">
                     <option value="observe">{{ t('admin.upstreamPriceMonitor.mode.observe') }}</option>
-                    <option value="auto_apply">{{ t('admin.upstreamPriceMonitor.mode.auto_apply') }}</option>
+                    <option value="auto_apply" disabled>
+                      {{ t('admin.upstreamPriceMonitor.mode.auto_apply') }} · {{ t('admin.upstreamPriceMonitor.config.rolloutLocked') }}
+                    </option>
                   </select>
                 </label>
                 <label class="form-field">
@@ -423,6 +424,9 @@
               <div>
                 <h2 class="font-bold text-gray-900 dark:text-white">{{ t('admin.upstreamPriceMonitor.history.title') }}</h2>
                 <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">{{ t('admin.upstreamPriceMonitor.history.hint') }}</p>
+                <p class="mt-2 text-xs font-semibold text-blue-700 dark:text-blue-200" data-testid="history-observe-only-lock">
+                  {{ t('admin.upstreamPriceMonitor.history.observeOnlyLock') }}
+                </p>
               </div>
               <select v-model="runStatus" class="input w-full sm:w-48" data-testid="history-status-filter" @change="handleHistoryFilter">
                 <option value="">{{ t('admin.upstreamPriceMonitor.history.allStatuses') }}</option>
@@ -430,7 +434,7 @@
               </select>
             </div>
             <div class="overflow-x-auto">
-              <table class="w-full min-w-[980px] text-left text-sm">
+              <table class="w-full min-w-[840px] text-left text-sm">
                 <thead class="bg-gray-50/80 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:bg-dark-900/40 dark:text-dark-400">
                   <tr>
                     <th class="px-5 py-3">{{ t('admin.upstreamPriceMonitor.history.startedAt') }}</th>
@@ -439,7 +443,6 @@
                     <th class="px-4 py-3">{{ t('admin.upstreamPriceMonitor.history.result') }}</th>
                     <th class="px-4 py-3">{{ t('admin.upstreamPriceMonitor.history.cost') }}</th>
                     <th class="px-4 py-3">{{ t('admin.upstreamPriceMonitor.history.snapshot') }}</th>
-                    <th class="px-5 py-3 text-right">{{ t('admin.upstreamPriceMonitor.history.actions') }}</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-gray-100 dark:divide-dark-700/70">
@@ -461,16 +464,6 @@
                         {{ shortHash(run.snapshot_hash) }}
                       </code>
                     </td>
-                    <td class="px-5 py-4 text-right">
-                      <div class="flex justify-end gap-2">
-                        <button v-if="canApply(run)" type="button" class="text-xs font-semibold text-primary-600 hover:text-primary-700 dark:text-primary-300" @click="requestRunAction('apply', run)">
-                          {{ t('admin.upstreamPriceMonitor.overview.apply') }}
-                        </button>
-                        <button v-if="canRollback(run)" type="button" class="text-xs font-semibold text-amber-600 hover:text-amber-700 dark:text-amber-300" @click="requestRunAction('rollback', run)">
-                          {{ t('admin.upstreamPriceMonitor.overview.rollback') }}
-                        </button>
-                      </div>
-                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -489,15 +482,7 @@
       </template>
     </div>
 
-    <ConfirmDialog
-      :show="Boolean(pendingRunAction)"
-      :title="pendingRunAction?.type === 'rollback' ? t('admin.upstreamPriceMonitor.confirm.rollbackTitle') : t('admin.upstreamPriceMonitor.confirm.applyTitle')"
-      :message="pendingRunAction?.type === 'rollback' ? t('admin.upstreamPriceMonitor.confirm.rollbackMessage') : t('admin.upstreamPriceMonitor.confirm.applyMessage')"
-      :confirm-text="pendingRunAction?.type === 'rollback' ? t('admin.upstreamPriceMonitor.overview.rollback') : t('admin.upstreamPriceMonitor.overview.apply')"
-      :danger="pendingRunAction?.type === 'rollback'"
-      @confirm="confirmRunAction"
-      @cancel="pendingRunAction = null"
-    />
+    <TotpStepUpDialog :controller="monitorStepUp" />
   </AppLayout>
 </template>
 
@@ -505,7 +490,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
-import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -523,11 +508,11 @@ import upstreamPriceMonitorAPI, {
 import type { Account } from '@/types'
 import type { Channel } from '@/api/admin/channels'
 import { useAppStore } from '@/stores/app'
+import { isStepUpCancelled, useStepUp } from '@/composables/useStepUp'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { formatDateTime } from '@/utils/format'
 
 type MonitorTab = 'overview' | 'config' | 'history'
-type PendingRunAction = { type: 'apply' | 'rollback'; run: UpstreamPriceMonitorRun }
 
 const defaultConfig = (): UpstreamPriceMonitorConfig => ({
   enabled: false,
@@ -544,6 +529,7 @@ const defaultConfig = (): UpstreamPriceMonitorConfig => ({
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const monitorStepUp = useStepUp()
 const activeTab = ref<MonitorTab>('overview')
 const initialLoading = ref(true)
 const refreshing = ref(false)
@@ -570,7 +556,6 @@ const modelCatalogSearch = ref('')
 const modelCatalogDomesticOnly = ref(true)
 const updatingModel = ref('')
 const discoveringModels = ref(false)
-const pendingRunAction = ref<PendingRunAction | null>(null)
 
 let loadController: AbortController | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -588,8 +573,10 @@ function normalizedModels(): string[] {
 }
 
 function configPayload(): UpstreamPriceMonitorConfig {
-	return {
-		...configDraft,
+  return {
+    ...configDraft,
+    mode: 'observe',
+    active_probe_enabled: false,
     account_ids: [...configDraft.account_ids].map(Number).filter(Number.isFinite).sort((a, b) => a - b),
     channel_ids: [...configDraft.channel_ids].map(Number).filter(Number.isFinite).sort((a, b) => a - b),
     domestic_models: normalizedModels().sort((a, b) => a.localeCompare(b)),
@@ -629,11 +616,14 @@ const filteredModelCatalog = computed(() => {
   })
 })
 const hasReconciliationMismatch = computed(() => evidence.value.some(isEvidenceMismatch))
-const latestApplicableRun = computed(() => runs.value.find(canApply) || null)
-const latestRollbackRun = computed(() => runs.value.find(canRollback) || null)
 
 function assignConfig(config: UpstreamPriceMonitorConfig): void {
-  const normalized = { ...defaultConfig(), ...config }
+  const normalized = {
+    ...defaultConfig(),
+    ...config,
+    mode: 'observe' as const,
+    active_probe_enabled: false,
+  }
   Object.assign(configDraft, normalized, {
     account_ids: [...(normalized.account_ids || [])],
     channel_ids: [...(normalized.channel_ids || [])],
@@ -768,10 +758,11 @@ async function saveConfig(): Promise<void> {
   if (configError.value) return
   savingConfig.value = true
   try {
-    const saved = await upstreamPriceMonitorAPI.updateConfig(configPayload())
+    const saved = await monitorStepUp.run(() => upstreamPriceMonitorAPI.updateConfig(configPayload()))
     assignConfig(saved)
     appStore.showSuccess(t('admin.upstreamPriceMonitor.config.saved'))
   } catch (error) {
+    if (isStepUpCancelled(error)) return
     appStore.showError(extractApiErrorMessage(error, t('admin.upstreamPriceMonitor.messages.saveFailed')))
   } finally {
     savingConfig.value = false
@@ -804,41 +795,6 @@ async function discoverModels(): Promise<void> {
   } finally {
     discoveringModels.value = false
   }
-}
-
-function requestRunAction(type: PendingRunAction['type'], run: UpstreamPriceMonitorRun): void {
-  pendingRunAction.value = { type, run }
-}
-
-async function confirmRunAction(): Promise<void> {
-  const action = pendingRunAction.value
-  pendingRunAction.value = null
-  if (!action?.run.snapshot_hash) return
-  try {
-    if (action.type === 'rollback') {
-      await upstreamPriceMonitorAPI.rollbackRun(action.run.id, { snapshot_hash: action.run.snapshot_hash })
-      appStore.showSuccess(t('admin.upstreamPriceMonitor.messages.rollbackSuccess'))
-    } else {
-      await upstreamPriceMonitorAPI.applyRun(action.run.id, { snapshot_hash: action.run.snapshot_hash })
-      appStore.showSuccess(t('admin.upstreamPriceMonitor.messages.applySuccess'))
-    }
-    await refreshOverview()
-    if (activeTab.value === 'history') await refreshRuns()
-  } catch (error) {
-    const fallback = action.type === 'rollback'
-      ? t('admin.upstreamPriceMonitor.messages.rollbackFailed')
-      : t('admin.upstreamPriceMonitor.messages.applyFailed')
-    appStore.showError(extractApiErrorMessage(error, fallback))
-  }
-}
-
-function canApply(run: UpstreamPriceMonitorRun): boolean {
-  if (run.status !== 'completed' || !run.snapshot_hash || run.applied_at) return false
-  return true
-}
-
-function canRollback(run: UpstreamPriceMonitorRun): boolean {
-  return Boolean(run.rollback_available && run.snapshot_hash && run.applied_at)
 }
 
 function handleHistoryFilter(): void {

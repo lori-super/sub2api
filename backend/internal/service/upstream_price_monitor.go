@@ -47,6 +47,22 @@ var (
 	ErrUpstreamPriceMonitorInvalidConfig = infraerrors.BadRequest(
 		"UPSTREAM_PRICE_MONITOR_INVALID_CONFIG", "invalid upstream price monitor configuration",
 	)
+	ErrUpstreamPriceActiveProbeRolloutLocked = infraerrors.BadRequest(
+		"UPSTREAM_PRICE_ACTIVE_PROBE_ROLLOUT_LOCKED",
+		"active price probing will be available after safety testing is complete",
+	)
+	ErrUpstreamPriceAutoApplyRolloutLocked = infraerrors.BadRequest(
+		"UPSTREAM_PRICE_AUTO_APPLY_ROLLOUT_LOCKED",
+		"automatic price application will be available after safety testing is complete",
+	)
+	ErrUpstreamPriceApplyRolloutLocked = infraerrors.BadRequest(
+		"UPSTREAM_PRICE_APPLY_ROLLOUT_LOCKED",
+		"price snapshot application is disabled during the observation-only rollout",
+	)
+	ErrUpstreamPriceRollbackRolloutLocked = infraerrors.BadRequest(
+		"UPSTREAM_PRICE_ROLLBACK_ROLLOUT_LOCKED",
+		"price snapshot rollback is disabled during the observation-only rollout",
+	)
 	ErrUpstreamPriceMonitorRunConflict = infraerrors.Conflict(
 		"UPSTREAM_PRICE_MONITOR_RUN_CONFLICT", "an upstream price monitor run is already active",
 	)
@@ -77,6 +93,7 @@ type UpstreamPriceMonitorRepository interface {
 	GetRun(context.Context, int64) (*domain.UpstreamPriceMonitorRun, error)
 	ListRuns(context.Context, int, int, ...domain.UpstreamPriceMonitorRunStatus) (*domain.UpstreamPriceMonitorRunPage, error)
 	ListEvidenceByRun(context.Context, int64) ([]domain.UpstreamPriceEvidence, error)
+	FreezeEvidenceApplySnapshot(context.Context, int64, []int64, int) ([]domain.UpstreamPriceEvidence, error)
 	GetCheckpoints(context.Context, int64, []string) (map[string]domain.UpstreamPriceUsageCheckpoint, error)
 	CurrentLocalUsageLogID(context.Context, []int64) (int64, error)
 	AggregateLocalUsage(context.Context, []int64, map[string]int64, int64) (map[string]domain.UpstreamPriceLocalAggregate, error)
@@ -181,8 +198,15 @@ func (s *UpstreamPriceMonitorService) UpdateConfig(ctx context.Context, cfg *dom
 	if s == nil || s.repo == nil {
 		return ErrUpstreamPriceMonitorUnavailable
 	}
-	if cfg != nil && cfg.ActiveProbeEnabled && s.prober == nil {
-		return ErrUpstreamPriceMonitorInvalidConfig
+	// Conservative first-release guard: keep the implementation available for
+	// controlled tests, but make the public admin API unable to enable billable
+	// probes or automatic price mutations until the rollout is explicitly
+	// unlocked in a later release.
+	if cfg != nil && cfg.ActiveProbeEnabled {
+		return ErrUpstreamPriceActiveProbeRolloutLocked
+	}
+	if cfg != nil && cfg.Mode == domain.UpstreamPriceMonitorModeAutoApply {
+		return ErrUpstreamPriceAutoApplyRolloutLocked
 	}
 	if cfg != nil {
 		catalog, err := s.repo.ListModelCatalog(ctx)
@@ -334,54 +358,18 @@ func (s *UpstreamPriceMonitorService) ListRunEvidence(ctx context.Context, runID
 	return out, nil
 }
 
-func (s *UpstreamPriceMonitorService) ApplyRun(ctx context.Context, runID int64, snapshotHash string) (*domain.UpstreamPriceMonitorRun, error) {
-	if s == nil || s.repo == nil || runID <= 0 || strings.TrimSpace(snapshotHash) == "" {
-		return nil, ErrUpstreamPriceRunNotApplicable
+func (s *UpstreamPriceMonitorService) ApplyRun(_ context.Context, _ int64, _ string) (*domain.UpstreamPriceMonitorRun, error) {
+	if s == nil || s.repo == nil {
+		return nil, ErrUpstreamPriceMonitorUnavailable
 	}
-	run, err := s.repo.GetRun(ctx, runID)
-	if err != nil {
-		return nil, err
-	}
-	scope, ok := ReadUpstreamPriceRunApplyScope(run)
-	if !ok {
-		return nil, ErrUpstreamPriceRunNotApplicable
-	}
-	currentAccounts, err := s.loadDistinctUpstreamPriceMonitorAccounts(ctx, scope.AccountIDs)
-	if err != nil {
-		return nil, err
-	}
-	for _, accountID := range scope.AccountIDs {
-		if UpstreamPriceCredentialLedgerHash(currentAccounts[accountID]) != scope.AccountLedgerHashes[accountID] ||
-			UpstreamPriceAccountIdentityHash(currentAccounts[accountID]) != scope.AccountIdentityHashes[accountID] {
-			return nil, ErrUpstreamPriceSnapshotMismatch
-		}
-	}
-	if err := s.repo.ApplyRun(ctx, runID, strings.TrimSpace(snapshotHash), scope.ChannelIDs, scope.AccountIDs,
-		scope.DisplayMultiplierDecimals, scope.MaxAgeMinutes, scope.ConfigUpdatedAt, scope.ModelCatalogRevision); err != nil {
-		return nil, err
-	}
-	applied, err := s.repo.GetRun(ctx, runID)
-	if err != nil {
-		return nil, err
-	}
-	appliedModels, _ := upstreamPriceSummaryInt(applied.Summary["applied_models"])
-	if appliedModels > 0 && s.cacheInvalidator != nil {
-		s.cacheInvalidator.InvalidatePricingCache()
-	}
-	return applied, nil
+	return nil, ErrUpstreamPriceApplyRolloutLocked
 }
 
-func (s *UpstreamPriceMonitorService) RollbackRun(ctx context.Context, runID int64, snapshotHash string) (*domain.UpstreamPriceMonitorRun, error) {
-	if s == nil || s.repo == nil || runID <= 0 || strings.TrimSpace(snapshotHash) == "" {
-		return nil, ErrUpstreamPriceRunNotApplicable
+func (s *UpstreamPriceMonitorService) RollbackRun(_ context.Context, _ int64, _ string) (*domain.UpstreamPriceMonitorRun, error) {
+	if s == nil || s.repo == nil {
+		return nil, ErrUpstreamPriceMonitorUnavailable
 	}
-	if err := s.repo.RollbackRun(ctx, runID, strings.TrimSpace(snapshotHash)); err != nil {
-		return nil, err
-	}
-	if s.cacheInvalidator != nil {
-		s.cacheInvalidator.InvalidatePricingCache()
-	}
-	return s.repo.GetRun(ctx, runID)
+	return nil, ErrUpstreamPriceRollbackRolloutLocked
 }
 
 func normalizeAndValidateUpstreamPriceMonitorConfig(cfg *domain.UpstreamPriceMonitorConfig) error {
@@ -579,6 +567,12 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 	if err != nil {
 		return nil, fmt.Errorf("get upstream price monitor config: %w", err)
 	}
+	// The first release is observation-only even if an older database row or a
+	// direct SQL edit still contains pre-rollout values. Enforce the lock in the
+	// runtime path so it cannot be bypassed through persisted configuration.
+	cfg.Mode = domain.UpstreamPriceMonitorModeObserve
+	cfg.ActiveProbeEnabled = false
+	options.DryRun = true
 	if options.Trigger == "" {
 		options.Trigger = domain.UpstreamPriceMonitorRunTriggerManual
 	}
@@ -623,13 +617,17 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 		runErrors = append(runErrors, "refresh upstream model catalogue: "+discoveryErr.Error())
 	} else if refreshedConfig, refreshErr := s.repo.GetConfig(ctx); refreshErr != nil {
 		runErrors = append(runErrors, "reload model probe scope: "+refreshErr.Error())
-	} else if validateErr := normalizeAndValidateUpstreamPriceMonitorConfig(refreshedConfig); validateErr != nil {
-		runErrors = append(runErrors, "validate discovered model probe scope: "+validateErr.Error())
-	} else if !sameUpstreamPriceNonModelConfig(cfg, refreshedConfig) {
-		runErrors = append(runErrors, "monitor configuration changed while refreshing the upstream model catalogue")
 	} else {
-		cfg.DomesticModels = refreshedConfig.DomesticModels
-		cfg.UpdatedAt = refreshedConfig.UpdatedAt
+		refreshedConfig.Mode = domain.UpstreamPriceMonitorModeObserve
+		refreshedConfig.ActiveProbeEnabled = false
+		if validateErr := normalizeAndValidateUpstreamPriceMonitorConfig(refreshedConfig); validateErr != nil {
+			runErrors = append(runErrors, "validate discovered model probe scope: "+validateErr.Error())
+		} else if !sameUpstreamPriceNonModelConfig(cfg, refreshedConfig) {
+			runErrors = append(runErrors, "monitor configuration changed while refreshing the upstream model catalogue")
+		} else {
+			cfg.DomesticModels = refreshedConfig.DomesticModels
+			cfg.UpdatedAt = refreshedConfig.UpdatedAt
+		}
 	}
 	if modelCatalogRevision <= 0 {
 		runErrors = append(runErrors, "model catalogue has no scan revision")
@@ -755,7 +753,9 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 
 	finalizeCtx, cancelFinalize := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancelFinalize()
-	evidence, listErr := s.repo.ListEvidenceByRun(finalizeCtx, run.ID)
+	evidence, listErr := s.repo.FreezeEvidenceApplySnapshot(
+		finalizeCtx, run.ID, cfg.ChannelIDs, cfg.DisplayMultiplierDecimals,
+	)
 	if listErr != nil {
 		runErrors = append(runErrors, "list evidence: "+listErr.Error())
 	} else {

@@ -1,15 +1,40 @@
-const base = (process.env.X5M5X_API_BASE || 'https://us-api.x5m5x.com').replace(/\/$/, '')
-const apiKey = process.env.X5M5X_TOKEN_KEY || ''
-const concurrency = Math.max(1, Math.min(3, Number(process.env.X5M5X_PROBE_CONCURRENCY || '2')))
-const cachePrefixRepeats = Math.max(64, Math.min(400, Number(process.env.X5M5X_CACHE_PREFIX_REPEATS || '220')))
-const requestedModels = new Set(
-  (process.env.X5M5X_PROBE_MODELS || '')
-    .split(',')
-    .map(value => value.trim())
-    .filter(Boolean)
-)
+import {
+  AtomicBudget,
+  AtomicRequestLimit,
+  boundedConcurrency,
+  positiveInteger,
+  positiveNumber,
+  requiredProbeModels,
+  sanitizedFailure,
+  sanitizedHTTPError,
+  validatePricingURL,
+  validateProbeTarget
+} from './x5m5x-probe-safety.mjs'
 
+const apiKey = process.env.X5M5X_TOKEN_KEY || ''
 if (!apiKey) throw new Error('X5M5X_TOKEN_KEY is required')
+
+const requestedModelList = requiredProbeModels()
+const requestedModels = new Set(requestedModelList)
+const maximumRequests = positiveInteger('X5M5X_PROBE_MAX_REQUESTS', '4')
+const worstCaseRequests = requestedModelList.length * 4
+if (maximumRequests < worstCaseRequests) {
+  throw new Error(
+    `X5M5X_PROBE_MAX_REQUESTS=${maximumRequests} is insufficient; ` +
+    `${requestedModelList.length} model(s) require at least ${worstCaseRequests} request slots`
+  )
+}
+const base = validateProbeTarget(process.env.X5M5X_API_BASE || 'https://us-api.x5m5x.com', apiKey)
+const pricingURL = validatePricingURL(process.env.X5M5X_PRICING_URL || 'https://api.x5m5x.com/pricing/')
+const budget = positiveNumber('X5M5X_PROBE_BUDGET', '0.05')
+const concurrency = boundedConcurrency(1, 3)
+const reservationAmount = positiveNumber(
+  'X5M5X_PROBE_RESERVATION',
+  String(Math.min(0.005, budget / Math.max(4, concurrency)))
+)
+const cachePrefixRepeats = Math.max(64, Math.min(400, Number(process.env.X5M5X_CACHE_PREFIX_REPEATS || '220')))
+
+if (reservationAmount > budget) throw new Error('X5M5X_PROBE_RESERVATION must not exceed X5M5X_PROBE_BUDGET')
 
 const headers = { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -18,26 +43,36 @@ async function fetchTimeout(url, options = {}, timeoutMs = 120_000) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    return await fetch(url, { ...options, signal: controller.signal })
+    return await fetch(url, { ...options, redirect: 'error', signal: controller.signal })
   } finally {
     clearTimeout(timer)
   }
 }
 
 async function getJSON(path, attempts = 5) {
-  let lastError
+  let lastFailure = { code: 'upstream_transport_error', status: 0 }
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       const response = await fetchTimeout(`${base}${path}`, { headers }, 45_000)
+      if (!response.ok) {
+        await response.body?.cancel()
+        throw sanitizedHTTPError(response)
+      }
       const text = await response.text()
-      if (!response.ok) throw new Error(`GET ${path} HTTP ${response.status}: ${text.slice(0, 240)}`)
-      return JSON.parse(text)
+      try {
+        return JSON.parse(text)
+      } catch {
+        const error = new Error(`upstream_request_failed code=upstream_invalid_json status=${response.status}`)
+        error.code = 'upstream_invalid_json'
+        error.status = response.status
+        throw error
+      }
     } catch (error) {
-      lastError = error
+      lastFailure = sanitizedFailure(error)
       if (attempt < attempts) await sleep(attempt * 1000)
     }
   }
-  throw lastError
+  throw new Error(`upstream_request_failed code=${lastFailure.code} status=${lastFailure.status}`)
 }
 
 function stat(usage, model) {
@@ -65,20 +100,35 @@ function delta(before, after) {
   }
 }
 
+function totalCost(usage) {
+  return Number(usage?.usage?.total?.actual_cost || 0)
+}
+
 async function waitLedger(model, before, maxMs = 45_000) {
   const deadline = Date.now() + maxMs
   let current = before
+  let lastUsage = null
   while (Date.now() < deadline) {
     await sleep(1500)
     const usage = await getJSON('/v1/usage')
+    lastUsage = usage
     current = stat(usage, model)
-    if (current.requests > before.requests) return delta(before, current)
+    if (current.requests > before.requests) return { delta: delta(before, current), usage }
   }
-  return delta(before, current)
+  return { delta: delta(before, current), usage: lastUsage }
 }
 
 async function send(model, body, session) {
-  const before = stat(await getJSON('/v1/usage'), model)
+  const beforeUsage = await getJSON('/v1/usage')
+  budgetGuard.observe(totalCost(beforeUsage))
+  const reservation = budgetGuard.reserve(`${model}:${session}`)
+  if (!reservation) return { dispatched: false, error: 'budget_exhausted', usage: null, delta: null }
+  if (!requestGuard.acquire()) {
+    budgetGuard.cancel(reservation)
+    budgetGuard.halt()
+    return { dispatched: false, error: 'request_limit_exhausted', usage: null, delta: null }
+  }
+  const before = stat(beforeUsage, model)
   let responseUsage = null
   let error = null
   try {
@@ -91,17 +141,37 @@ async function send(model, body, session) {
       },
       body: JSON.stringify(body)
     })
-    const text = await response.text()
-    if (!response.ok) error = `HTTP ${response.status}: ${text.slice(0, 240)}`
-    else responseUsage = JSON.parse(text).usage || null
+    if (!response.ok) {
+      await response.body?.cancel()
+      error = { code: 'upstream_http_error', status: response.status }
+    } else {
+      const text = await response.text()
+      try {
+        responseUsage = JSON.parse(text).usage || null
+      } catch {
+        error = { code: 'upstream_invalid_json', status: response.status }
+      }
+    }
   } catch (caught) {
-    error = `transport_error: ${caught.message}`
+    error = sanitizedFailure(caught)
   }
 
   // Always inspect the ledger before any subsequent request.
   const observed = await waitLedger(model, before, error ? 15_000 : 45_000)
-  if (observed.requests !== 1) return { error: error || `ledger_request_delta_${observed.requests}`, usage: responseUsage, delta: observed }
-  return { error, usage: responseUsage, delta: observed }
+  if (observed.usage) budgetGuard.settle(reservation, totalCost(observed.usage))
+  else {
+    budgetGuard.cancel(reservation)
+    budgetGuard.halt()
+  }
+  if (observed.delta.requests !== 1) {
+    return {
+      dispatched: true,
+      error: error || `ledger_request_delta_${observed.delta.requests}`,
+      usage: responseUsage,
+      delta: observed.delta
+    }
+  }
+  return { dispatched: true, error, usage: responseUsage, delta: observed.delta }
 }
 
 function priceFromResidual(row, inputPrice, outputPrice) {
@@ -154,7 +224,17 @@ function parsePrice(html) {
 }
 
 async function declaredPrices() {
-  const response = await fetchTimeout('https://api.x5m5x.com/pricing/', { headers: { Accept: 'text/html' } }, 45_000)
+  let response
+  try {
+    response = await fetchTimeout(pricingURL, { headers: { Accept: 'text/html' } }, 45_000)
+  } catch (error) {
+    const failure = sanitizedFailure(error)
+    throw new Error(`upstream_request_failed code=${failure.code} status=${failure.status}`)
+  }
+  if (!response.ok) {
+    await response.body?.cancel()
+    throw sanitizedHTTPError(response)
+  }
   const html = await response.text()
   const map = new Map()
   const rows = html.match(/<tr\b(?=[^>]*\bclass=["'][^"']*\btoken-model\b[^"']*["'])[^>]*>.*?<\/tr>/gis) || []
@@ -175,11 +255,19 @@ const modelResponse = await getJSON('/v1/models')
 const allModels = (Array.isArray(modelResponse?.data) ? modelResponse.data : modelResponse)
   .map(item => typeof item === 'string' ? item : item?.id)
   .filter(Boolean)
-const models = allModels.filter(model => requestedModels.size === 0 || requestedModels.has(model))
+const models = allModels.filter(model => requestedModels.has(model))
+const availableModels = new Set(allModels)
+const missingModels = requestedModelList.filter(model => !availableModels.has(model))
+if (missingModels.length > 0) throw new Error(`Requested models not returned by /v1/models: ${missingModels.join(', ')}`)
 
 const prefix = 'stable system cache knowledge alpha beta gamma delta epsilon zeta eta theta '.repeat(cachePrefixRepeats)
 const results = []
 let cursor = 0
+
+const startUsage = await getJSON('/v1/usage')
+const startCost = totalCost(startUsage)
+const budgetGuard = new AtomicBudget(budget, startCost, reservationAmount)
+const requestGuard = new AtomicRequestLimit(maximumRequests)
 
 async function probeModel(model) {
   const prices = priceMap.get(model.toLowerCase())
@@ -198,14 +286,16 @@ async function probeModel(model) {
     stream: false
   }
   const first = await send(model, plainBody, session)
-  const second = first.delta?.requests === 1 ? await send(model, plainBody, session) : { error: 'first_request_not_billed_once' }
+  const second = first.delta?.requests === 1 && !budgetGuard.stopped && !requestGuard.stopped
+    ? await send(model, plainBody, session)
+    : { error: first.delta?.requests === 1 ? 'probe_stopped' : 'first_request_not_billed_once' }
   let rows = [first, second]
 
   // If normal sticky repetition produces no cache telemetry, try the standard
   // cache_control shape once. Unsupported models fail closed without retries.
   const noCache = rows.every(row => !row?.delta?.cache_write && !row?.delta?.cache_read)
   let explicit = []
-  if (noCache) {
+  if (noCache && !budgetGuard.stopped && !requestGuard.stopped) {
     const explicitSession = `pricing-cache-explicit-${model}-${crypto.randomUUID()}`
     const explicitBody = {
       model,
@@ -220,9 +310,9 @@ async function probeModel(model) {
       stream: false
     }
     const explicitFirst = await send(model, explicitBody, explicitSession)
-    const explicitSecond = explicitFirst.delta?.requests === 1
+    const explicitSecond = explicitFirst.delta?.requests === 1 && !budgetGuard.stopped && !requestGuard.stopped
       ? await send(model, explicitBody, explicitSession)
-      : { error: 'explicit_first_request_not_billed_once' }
+      : { error: explicitFirst.delta?.requests === 1 ? 'probe_stopped' : 'explicit_first_request_not_billed_once' }
     explicit = [explicitFirst, explicitSecond]
     rows = rows.concat(explicit)
   }
@@ -238,23 +328,31 @@ async function probeModel(model) {
 }
 
 async function worker() {
-  while (true) {
+  while (!budgetGuard.stopped && !requestGuard.stopped) {
     const index = cursor++
     if (index >= models.length) return
     const result = await probeModel(models[index])
+    if (
+      Array.isArray(result.plain) &&
+      ![...result.plain, ...(result.explicit || [])].some(row => row?.dispatched)
+    ) return
     results.push(result)
     console.log(`PROGRESS ${results.length}/${models.length} ${result.model} read=${result.cache_read_per_million ?? '-'} write=${result.cache_write_per_million ?? '-'}`)
   }
 }
 
-const startUsage = await getJSON('/v1/usage')
-const startCost = Number(startUsage?.usage?.total?.actual_cost || 0)
 await Promise.all(Array.from({ length: concurrency }, () => worker()))
 const endUsage = await getJSON('/v1/usage')
-const endCost = Number(endUsage?.usage?.total?.actual_cost || 0)
+const endCost = totalCost(endUsage)
+budgetGuard.observe(endCost)
 
 console.log(`RESULT ${JSON.stringify({
   models: results.sort((a, b) => a.model.localeCompare(b.model)),
+  budget,
+  reservation_per_request: reservationAmount,
+  budget_state: budgetGuard.snapshot(),
+  budget_stopped: budgetGuard.stopped,
+  request_limit_state: requestGuard.snapshot(),
   start_cost: startCost,
   end_cost: endCost,
   run_cost: Number((endCost - startCost).toFixed(12))

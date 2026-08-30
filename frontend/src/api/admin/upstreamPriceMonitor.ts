@@ -85,6 +85,7 @@ export interface UpstreamPriceEvidence {
   local_delta?: UpstreamPriceUsageCounters | null
   current_prices?: UpstreamPriceValues | null
   suggested_prices?: UpstreamPriceValues | null
+  display_prices_current?: UpstreamPriceValues | null
   display_multiplier_current?: number | null
   display_multiplier_suggested?: number | null
   last_error?: string
@@ -176,7 +177,15 @@ export async function getConfig(options?: { signal?: AbortSignal }): Promise<Ups
 export async function updateConfig(
   config: UpstreamPriceMonitorConfig,
 ): Promise<UpstreamPriceMonitorConfig> {
-  const { data } = await apiClient.put<UpstreamPriceMonitorConfig>(`${basePath}/config`, config)
+  // First-release safety belt: the UI/API client cannot opt into billable
+  // active probes or automatic price mutation before the guarded rollout is
+  // explicitly enabled server-side.
+  const observeOnlyConfig: UpstreamPriceMonitorConfig = {
+    ...config,
+    mode: 'observe',
+    active_probe_enabled: false,
+  }
+  const { data } = await apiClient.put<UpstreamPriceMonitorConfig>(`${basePath}/config`, observeOnlyConfig)
   return data
 }
 

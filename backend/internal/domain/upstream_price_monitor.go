@@ -202,6 +202,7 @@ type UpstreamPriceEvidence struct {
 	Prices                     UpstreamPriceVector               `json:"prices"`
 	CurrentPrices              UpstreamPriceVector               `json:"current_prices"`
 	SuggestedPrices            UpstreamPriceVector               `json:"suggested_prices"`
+	DisplayPricesCurrent       UpstreamPriceVector               `json:"display_prices_current"`
 	DisplayMultiplierCurrent   *float64                          `json:"display_multiplier_current,omitempty"`
 	DisplayMultiplierSuggested *float64                          `json:"display_multiplier_suggested,omitempty"`
 	LastError                  string                            `json:"last_error,omitempty"`

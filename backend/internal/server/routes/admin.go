@@ -117,7 +117,7 @@ func RegisterAdminRoutes(
 
 		// 仅影响用户可见页面的展示定价，不影响真实渠道和扣费。
 		registerDisplayPricingRoutes(admin, h)
-		registerUpstreamPriceMonitorRoutes(admin, h)
+		registerUpstreamPriceMonitorRoutes(admin, h, stepUpAuth)
 
 		// 渠道监控
 		registerChannelMonitorRoutes(admin, h, settingService)
@@ -137,11 +137,15 @@ func RegisterAdminRoutes(
 	}
 }
 
-func registerUpstreamPriceMonitorRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerUpstreamPriceMonitorRoutes(
+	admin *gin.RouterGroup,
+	h *handler.Handlers,
+	stepUpAuth middleware.StepUpAuthMiddleware,
+) {
 	monitor := admin.Group("/upstream-price-monitor")
 	{
 		monitor.GET("/config", h.Admin.UpstreamPriceMonitor.GetConfig)
-		monitor.PUT("/config", h.Admin.UpstreamPriceMonitor.UpdateConfig)
+		monitor.PUT("/config", gin.HandlerFunc(stepUpAuth), h.Admin.UpstreamPriceMonitor.UpdateConfig)
 		monitor.GET("/runtime", h.Admin.UpstreamPriceMonitor.GetRuntime)
 		monitor.GET("/evidence", h.Admin.UpstreamPriceMonitor.ListEvidence)
 		monitor.GET("/models", h.Admin.UpstreamPriceMonitor.ListModels)
@@ -149,8 +153,8 @@ func registerUpstreamPriceMonitorRoutes(admin *gin.RouterGroup, h *handler.Handl
 		monitor.POST("/models/status", h.Admin.UpstreamPriceMonitor.UpdateModelStatus)
 		monitor.GET("/runs", h.Admin.UpstreamPriceMonitor.ListRuns)
 		monitor.POST("/runs", h.Admin.UpstreamPriceMonitor.CreateRun)
-		monitor.POST("/runs/:id/apply", h.Admin.UpstreamPriceMonitor.ApplyRun)
-		monitor.POST("/runs/:id/rollback", h.Admin.UpstreamPriceMonitor.RollbackRun)
+		monitor.POST("/runs/:id/apply", gin.HandlerFunc(stepUpAuth), h.Admin.UpstreamPriceMonitor.ApplyRun)
+		monitor.POST("/runs/:id/rollback", gin.HandlerFunc(stepUpAuth), h.Admin.UpstreamPriceMonitor.RollbackRun)
 	}
 }
 

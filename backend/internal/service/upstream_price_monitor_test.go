@@ -162,6 +162,17 @@ func TestUpstreamPriceCredentialLedgerHashExcludesLocalAccountID(t *testing.T) {
 	require.NotEqual(t, UpstreamPriceAccountIdentityHash(first), UpstreamPriceAccountIdentityHash(second))
 }
 
+func TestUpstreamPriceEvidenceHashIncludesDisplayPriceSnapshot(t *testing.T) {
+	low, changed := 0.01, 0.02
+	base := []domain.UpstreamPriceEvidence{{
+		ID: 1, RunID: 2, ModelName: "deepseek-request", BillingMode: DisplayBillingModePerRequest,
+		DisplayPricesCurrent: domain.UpstreamPriceVector{PerRequestLTE256K: &low},
+	}}
+	modified := append([]domain.UpstreamPriceEvidence(nil), base...)
+	modified[0].DisplayPricesCurrent.PerRequestLTE256K = &changed
+	require.NotEqual(t, upstreamPriceEvidenceHash(base), upstreamPriceEvidenceHash(modified))
+}
+
 func TestMissingUpstreamPriceProbeModelsPrefersTrustedNaturalEvidence(t *testing.T) {
 	models := []string{"MiniMax-M3", "glm-5.3"}
 	input, output, cacheWrite, cacheRead := 0.2, 0.8, 0.4, 0.05

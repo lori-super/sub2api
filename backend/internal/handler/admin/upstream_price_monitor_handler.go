@@ -126,13 +126,17 @@ func (h *UpstreamPriceMonitorHandler) ListRuns(c *gin.Context) {
 }
 
 type createUpstreamPriceMonitorRunRequest struct {
-	DryRun bool `json:"dry_run"`
+	DryRun *bool `json:"dry_run" binding:"required"`
 }
 
 func (h *UpstreamPriceMonitorHandler) CreateRun(c *gin.Context) {
 	var req createUpstreamPriceMonitorRunRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if req.DryRun == nil || !*req.DryRun {
+		response.BadRequest(c, "Manual upstream price monitor runs must use dry_run=true")
 		return
 	}
 	run, err := h.monitor.RunOnce(c.Request.Context(), service.UpstreamPriceRunOptions{

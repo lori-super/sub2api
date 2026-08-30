@@ -71,11 +71,6 @@ const ToggleStub = defineComponent({
   emits: ['update:modelValue'],
   template: '<button type="button" role="switch" @click="$emit(\'update:modelValue\', !modelValue)" />',
 })
-const ConfirmDialogStub = defineComponent({
-  props: { show: Boolean, title: String, message: String },
-  emits: ['confirm', 'cancel'],
-  template: '<div v-if="show" data-testid="confirm-dialog"><button data-testid="confirm-action" @click="$emit(\'confirm\')">confirm</button></div>',
-})
 
 function mountView() {
   return mount(UpstreamPriceMonitorView, {
@@ -85,7 +80,7 @@ function mountView() {
         Icon: true,
         Toggle: ToggleStub,
         Pagination: true,
-        ConfirmDialog: ConfirmDialogStub,
+        TotpStepUpDialog: true,
       },
     },
   })
@@ -173,30 +168,45 @@ describe('UpstreamPriceMonitorView', () => {
     wrapper.unmount()
   })
 
-  it('requires confirmation and sends the snapshot hash when applying', async () => {
+  it('hides every apply and rollback action during the observe-only rollout', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    await wrapper.get('[data-testid="apply-latest"]').trigger('click')
-    expect(wrapper.get('[data-testid="confirm-dialog"]').exists()).toBe(true)
-    await wrapper.get('[data-testid="confirm-action"]').trigger('click')
+    expect(wrapper.get('[data-testid="observe-only-lock"]').text())
+      .toContain('admin.upstreamPriceMonitor.overview.observeOnlyLock')
+    expect(wrapper.find('[data-testid="apply-latest"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="rollback-latest"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="tab-history"]').trigger('click')
     await flushPromises()
 
-    expect(api.applyRun).toHaveBeenCalledWith(1, { snapshot_hash: 'abcdef1234567890' })
+    expect(wrapper.get('[data-testid="history-observe-only-lock"]').text())
+      .toContain('admin.upstreamPriceMonitor.history.observeOnlyLock')
+    const buttonLabels = wrapper.findAll('button').map(button => button.text())
+    expect(buttonLabels).not.toContain('admin.upstreamPriceMonitor.overview.apply')
+    expect(buttonLabels).not.toContain('admin.upstreamPriceMonitor.overview.rollback')
+    expect(wrapper.find('[data-testid="confirm-dialog"]').exists()).toBe(false)
+    expect(api.applyRun).not.toHaveBeenCalled()
+    expect(api.rollbackRun).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
-  it('saves account, channel and domestic-model rules without credentials', async () => {
+  it('locks active probes and auto apply while saving observe-only rules without credentials', async () => {
     const wrapper = mountView()
     await flushPromises()
     await wrapper.get('[data-testid="tab-config"]').trigger('click')
-    await wrapper.get('[data-testid="config-mode"]').setValue('auto_apply')
     await flushPromises()
+
+    expect(wrapper.get('[data-testid="config-active-probe"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="config-mode"]').get('option[value="auto_apply"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('admin.upstreamPriceMonitor.config.rolloutLocked')
+
     await wrapper.get('[data-testid="config-panel"] form').trigger('submit')
     await flushPromises()
 
     expect(api.updateConfig).toHaveBeenCalledWith(expect.objectContaining({
-      mode: 'auto_apply',
+      mode: 'observe',
+      active_probe_enabled: false,
       account_ids: [7],
       channel_ids: [3],
       domestic_models: ['deepseek-v4-flash-0731'],

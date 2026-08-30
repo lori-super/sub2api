@@ -33,3 +33,16 @@ func TestUpstreamPriceMonitorUsageIndexIsConcurrent(t *testing.T) {
 	require.Contains(t, sql, "create index concurrently if not exists")
 	require.Contains(t, sql, "on usage_logs (account_id, id)")
 }
+
+func TestUpstreamPriceMonitorDisplayPriceSnapshotUsesForwardMigration(t *testing.T) {
+	baseRaw, err := os.ReadFile("235_upstream_price_monitor.sql")
+	require.NoError(t, err)
+	require.NotContains(t, strings.ToLower(string(baseRaw)), "display_prices_current")
+
+	raw, err := os.ReadFile("239_upstream_price_monitor_display_price_snapshot.sql")
+	require.NoError(t, err)
+	sql := strings.ToLower(string(raw))
+	require.Contains(t, sql, "alter table upstream_price_monitor_evidence")
+	require.Contains(t, sql, "add column if not exists display_prices_current jsonb")
+	require.Contains(t, sql, "not null default '{}'::jsonb")
+}

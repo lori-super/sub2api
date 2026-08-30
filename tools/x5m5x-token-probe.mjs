@@ -1,16 +1,36 @@
-const base = (process.env.X5M5X_API_BASE || 'https://us-api.x5m5x.com').replace(/\/$/, '')
-const apiKey = process.env.X5M5X_TOKEN_KEY || ''
-const budget = Number(process.env.X5M5X_PROBE_BUDGET || '0.05')
-const concurrency = Math.max(1, Math.min(5, Number(process.env.X5M5X_PROBE_CONCURRENCY || '3')))
-const requestedModels = new Set(
-  (process.env.X5M5X_PROBE_MODELS || '')
-    .split(',')
-    .map(value => value.trim())
-    .filter(Boolean)
-)
+import {
+  AtomicBudget,
+  AtomicRequestLimit,
+  boundedConcurrency,
+  positiveInteger,
+  positiveNumber,
+  requiredProbeModels,
+  sanitizedFailure,
+  sanitizedHTTPError,
+  validateProbeTarget
+} from './x5m5x-probe-safety.mjs'
 
+const apiKey = process.env.X5M5X_TOKEN_KEY || ''
 if (!apiKey) throw new Error('X5M5X_TOKEN_KEY is required')
-if (!Number.isFinite(budget) || budget <= 0) throw new Error('X5M5X_PROBE_BUDGET must be positive')
+
+const requestedModelList = requiredProbeModels()
+const requestedModels = new Set(requestedModelList)
+const maximumRequests = positiveInteger('X5M5X_PROBE_MAX_REQUESTS', '4')
+const worstCaseRequests = requestedModelList.length * 4
+if (maximumRequests < worstCaseRequests) {
+  throw new Error(
+    `X5M5X_PROBE_MAX_REQUESTS=${maximumRequests} is insufficient; ` +
+    `${requestedModelList.length} model(s) require at least ${worstCaseRequests} request slots`
+  )
+}
+const base = validateProbeTarget(process.env.X5M5X_API_BASE || 'https://us-api.x5m5x.com', apiKey)
+const budget = positiveNumber('X5M5X_PROBE_BUDGET', '0.05')
+const concurrency = boundedConcurrency(1, 5)
+const reservationAmount = positiveNumber(
+  'X5M5X_PROBE_RESERVATION',
+  String(Math.min(0.005, budget / Math.max(4, concurrency)))
+)
+if (reservationAmount > budget) throw new Error('X5M5X_PROBE_RESERVATION must not exceed X5M5X_PROBE_BUDGET')
 
 const commonHeaders = {
   Authorization: `Bearer ${apiKey}`,
@@ -23,26 +43,36 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 60_000) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    return await fetch(url, { ...options, signal: controller.signal })
+    return await fetch(url, { ...options, redirect: 'error', signal: controller.signal })
   } finally {
     clearTimeout(timer)
   }
 }
 
 async function getJSON(path, attempts = 5) {
-  let lastError
+  let lastFailure = { code: 'upstream_transport_error', status: 0 }
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       const response = await fetchWithTimeout(`${base}${path}`, { headers: commonHeaders }, 45_000)
+      if (!response.ok) {
+        await response.body?.cancel()
+        throw sanitizedHTTPError(response)
+      }
       const text = await response.text()
-      if (!response.ok) throw new Error(`GET ${path} HTTP ${response.status}: ${text.slice(0, 240)}`)
-      return JSON.parse(text)
+      try {
+        return JSON.parse(text)
+      } catch {
+        const error = new Error(`upstream_request_failed code=upstream_invalid_json status=${response.status}`)
+        error.code = 'upstream_invalid_json'
+        error.status = response.status
+        throw error
+      }
     } catch (error) {
-      lastError = error
+      lastFailure = sanitizedFailure(error)
       if (attempt < attempts) await sleep(1000 * attempt)
     }
   }
-  throw lastError
+  throw new Error(`upstream_request_failed code=${lastFailure.code} status=${lastFailure.status}`)
 }
 
 function usageStat(usage, model) {
@@ -89,15 +119,21 @@ async function waitForLedger(model, before, maxWaitMs = 45_000) {
 let startUsage = await getJSON('/v1/usage')
 const startCost = totalCost(startUsage)
 let latestTotalCost = startCost
-let budgetStopped = false
+const budgetGuard = new AtomicBudget(budget, startCost, reservationAmount)
+const requestGuard = new AtomicRequestLimit(maximumRequests)
 
 async function runSample(model, spec) {
   const beforeUsage = await getJSON('/v1/usage')
   latestTotalCost = Math.max(latestTotalCost, totalCost(beforeUsage))
-  const spentBefore = latestTotalCost - startCost
-  if (spentBefore >= budget) {
-    budgetStopped = true
+  budgetGuard.observe(latestTotalCost)
+  const reservation = budgetGuard.reserve(`${model}:${spec.kind}`)
+  if (!reservation) {
     return { kind: spec.kind, error: 'budget_exhausted' }
+  }
+  if (!requestGuard.acquire()) {
+    budgetGuard.cancel(reservation)
+    budgetGuard.halt()
+    return { kind: spec.kind, error: 'request_limit_exhausted' }
   }
 
   const before = usageStat(beforeUsage, model)
@@ -122,39 +158,49 @@ async function runSample(model, spec) {
       },
       body
     }, 120_000)
-    const text = await response.text()
     if (!response.ok) {
-      postError = `HTTP ${response.status}: ${text.slice(0, 240)}`
+      await response.body?.cancel()
+      postError = { code: 'upstream_http_error', status: response.status }
     } else {
-      const parsed = JSON.parse(text)
-      responseInfo = {
-        model: parsed.model || '',
-        prompt_tokens: Number(parsed.usage?.prompt_tokens || 0),
-        completion_tokens: Number(parsed.usage?.completion_tokens || 0),
-        cached_tokens: Number(parsed.usage?.prompt_tokens_details?.cached_tokens || 0)
+      const text = await response.text()
+      try {
+        const parsed = JSON.parse(text)
+        responseInfo = {
+          model: parsed.model || '',
+          prompt_tokens: Number(parsed.usage?.prompt_tokens || 0),
+          completion_tokens: Number(parsed.usage?.completion_tokens || 0),
+          cached_tokens: Number(parsed.usage?.prompt_tokens_details?.cached_tokens || 0)
+        }
+      } catch {
+        postError = { code: 'upstream_invalid_json', status: response.status }
       }
     }
   } catch (error) {
-    postError = `transport_error: ${error.message}`
+    postError = sanitizedFailure(error)
   }
 
   // Even after a transport error, inspect the ledger before considering any retry.
   const ledger = await waitForLedger(model, before, postError ? 20_000 : 45_000)
   if (ledger.usage) {
     latestTotalCost = Math.max(latestTotalCost, totalCost(ledger.usage))
+    budgetGuard.settle(reservation, latestTotalCost)
+  } else {
+    budgetGuard.cancel(reservation)
+    budgetGuard.halt()
   }
   if (ledger.delta.requests !== 1) {
     return {
       kind: spec.kind,
+      dispatched: true,
       error: postError || `ledger_request_delta_${ledger.delta.requests}`,
       response: responseInfo,
       delta: ledger.delta
     }
   }
   if (ledger.delta.input < 0 || ledger.delta.output < 0 || ledger.delta.cost < 0) {
-    return { kind: spec.kind, error: 'negative_ledger_delta', response: responseInfo, delta: ledger.delta }
+    return { kind: spec.kind, dispatched: true, error: 'negative_ledger_delta', response: responseInfo, delta: ledger.delta }
   }
-  return { kind: spec.kind, response: responseInfo, delta: ledger.delta, post_warning: postError }
+  return { kind: spec.kind, dispatched: true, response: responseInfo, delta: ledger.delta, post_warning: postError }
 }
 
 function solveThree(samples) {
@@ -252,14 +298,14 @@ async function probeModel(model) {
 
   const samples = []
   for (const spec of specs) {
-    if (budgetStopped) break
+    if (budgetGuard.stopped || requestGuard.stopped) break
     const sample = await runSample(model, spec)
     samples.push(sample)
   }
 
   let valid = samples.filter(sample => !sample.error && sample.delta?.requests === 1)
   const outputVariation = new Set(valid.map(sample => sample.delta.output)).size > 1
-  if (!budgetStopped && valid.length >= 2 && !outputVariation) {
+  if (!budgetGuard.stopped && !requestGuard.stopped && valid.length >= 2 && !outputVariation) {
     const fallback = await runSample(model, {
       kind: 'output_fallback',
       maxTokens: 64,
@@ -290,24 +336,29 @@ async function probeModel(model) {
 }
 
 const modelResponse = await getJSON('/v1/models')
-const models = (Array.isArray(modelResponse?.data) ? modelResponse.data : modelResponse)
+const allModels = (Array.isArray(modelResponse?.data) ? modelResponse.data : modelResponse)
   .map(item => typeof item === 'string' ? item : item?.id)
   .filter(Boolean)
-  .filter(model => requestedModels.size === 0 || requestedModels.has(model))
+const availableModels = new Set(allModels)
+const missingModels = requestedModelList.filter(model => !availableModels.has(model))
+if (missingModels.length > 0) throw new Error(`Requested models not returned by /v1/models: ${missingModels.join(', ')}`)
+const models = allModels.filter(model => requestedModels.has(model))
 
 const results = []
 let nextModel = 0
 
 async function worker(workerID) {
-  while (!budgetStopped) {
+  while (!budgetGuard.stopped && !requestGuard.stopped) {
     const index = nextModel++
     if (index >= models.length) return
     const model = models[index]
     const result = await probeModel(model)
+    if (!result.samples.some(sample => sample.dispatched)) return
     results.push(result)
     console.log(`PROGRESS ${results.length}/${models.length} ${model} ${result.confidence}`)
   }
-  console.log(`WORKER ${workerID} stopped by budget`)
+  const reason = budgetGuard.stopped ? 'budget' : 'request_limit'
+  console.log(`WORKER ${workerID} stopped by ${reason}`)
 }
 
 await Promise.all(Array.from({ length: concurrency }, (_, index) => worker(index + 1)))
@@ -319,7 +370,10 @@ const output = {
   model_count: models.length,
   completed_models: results.length,
   budget,
-  budget_stopped: budgetStopped,
+  reservation_per_request: reservationAmount,
+  budget_state: budgetGuard.snapshot(),
+  budget_stopped: budgetGuard.stopped,
+  request_limit_state: requestGuard.snapshot(),
   start_cost: startCost,
   end_cost: endCost,
   run_cost: Number((endCost - startCost).toFixed(12)),

@@ -1,7 +1,7 @@
 export default {
   upstreamPriceMonitor: {
     title: 'Upstream price monitor',
-    description: 'Reconcile customer traffic first, then optionally fill missing evidence through the same production key.',
+    description: 'The initial rollout reconciles customer traffic only; billable active probes and auto apply open after safety testing.',
     refresh: 'Refresh status',
     tabs: {
       overview: 'Overview',
@@ -26,7 +26,8 @@ export default {
     overview: {
       modeHintObserve: 'Runs create price snapshots and never change channel or display pricing automatically.',
       modeHintAuto: 'Trusted changes may be applied automatically; anomalous or unobservable fields remain alert-only.',
-      runNow: 'Probe now (no price changes)', running: 'Probing…', apply: 'Apply snapshot', rollback: 'Roll back latest apply',
+      runNow: 'Probe now (no price changes)', running: 'Probing…',
+      observeOnlyLock: 'Prices cannot be changed during the observe-only rollout; apply and rollback are unavailable.',
       evidenceTitle: 'Model price evidence', evidenceHint: 'Official display base prices stay read-only; suggested prices include the configured markup.',
       search: 'Search models', allStatuses: 'All evidence states', empty: 'No model-level price evidence yet.',
       model: 'Model', evidence: 'Evidence', reconciliation: 'Reconciliation', prices: 'Current site price → suggested sale',
@@ -38,14 +39,15 @@ export default {
     },
     source: { user_request: 'Customer request', active_probe: 'Active probe', price_page: 'Published page' },
     config: {
-      title: 'Probe and apply rules', hint: 'Production keys stay in the selected account credentials and are never returned to the browser.',
+      title: 'Probe rules (observe-only rollout)', hint: 'Production keys stay in the selected account credentials and are never returned to the browser.',
       exclusiveWarning: 'Selected production keys must be exclusive to this site. External traffic or an unclosed local/upstream ledger disables automatic application and leaves alerts only.',
       enabled: 'Enable continuous monitoring', enabledHint: 'Reconcile customer traffic with the upstream ledger on schedule.', mode: 'Run mode',
       interval: 'Probe interval (minutes)', markup: 'Sale multiplier', markupHint: '1.20 means a 20% markup on verified upstream cost.',
       decimals: 'Display multiplier decimals', sampleAge: 'Maximum customer-sample age (minutes)', activeProbe: 'Allow active gap probes',
-      activeProbeHint: 'Billable probes run only for missing evidence and briefly lease every slot of a fully idle finite-concurrency account; unlimited or busy accounts are deferred.', accounts: 'Managed production accounts',
+      activeProbeHint: 'Billable active probes are forced off during the initial rollout and will open only after safety testing is complete.',
+      rolloutLocked: 'Available after safety testing', accounts: 'Managed production accounts',
       accountsHint: 'Hold Ctrl / Command to select multiple accounts. Only real requests routed through these accounts are used.',
-      channels: 'Target channels', channelsHint: 'Applying a snapshot updates these channels and display multipliers in one server transaction.',
+      channels: 'Target channels', channelsHint: 'These are future application targets only; the observe-only rollout never writes channel prices or display multipliers.',
       models: 'Managed domestic models', modelsHint: 'Read-only paid-probe scope. Manage it in the upstream model catalogue below; removing a model never deletes pricing or history.',
       catalogTitle: 'Upstream supported-model catalogue', catalogHint: 'New models are discovery-only and can be managed after every account sees them. Missing models pause only after 3 complete scans and 24 hours; pricing and history remain.',
       catalogSearch: 'Search models', catalogAll: 'All statuses', catalogStatus: 'Catalogue status', catalogCoverage: 'Account coverage',
@@ -62,19 +64,15 @@ export default {
       validationModels: 'Manage at least one domestic model before enabling monitoring.', noAccounts: 'No accounts available', noChannels: 'No channels available',
     },
     history: {
-      title: 'Runs', hint: 'Manual probes are always dry runs; prices change only when a snapshot is explicitly applied.',
+      title: 'Runs', hint: 'Manual probes are always dry runs that record snapshots and evidence without changing prices.',
+      observeOnlyLock: 'Prices cannot be changed during the observe-only rollout; apply and rollback are unavailable.',
       allStatuses: 'All statuses', empty: 'No runs yet.', startedAt: 'Started', trigger: 'Trigger', mode: 'Mode', result: 'Result',
       cost: 'Probe cost', snapshot: 'Snapshot', actions: 'Actions', matched: '{count} reconciled', mismatched: '{count} anomalous',
       manual: 'Manual', scheduled: 'Scheduled', active_probe: 'Active probe', noHash: '—',
     },
-    confirm: {
-      applyTitle: 'Apply price snapshot', applyMessage: 'Atomically update channel pricing and display multipliers from this snapshot. Official base prices stay unchanged.',
-      rollbackTitle: 'Roll back price snapshot', rollbackMessage: 'Restore the saved channel pricing and display multipliers from before this run was applied.',
-    },
     messages: {
       loadFailed: 'Failed to load the upstream price monitor', runCreated: 'Probe run created; it will not change prices',
-      runFailed: 'Failed to create probe run', applySuccess: 'Price snapshot applied', applyFailed: 'Failed to apply price snapshot',
-      rollbackSuccess: 'Price snapshot rolled back', rollbackFailed: 'Failed to roll back price snapshot', saveFailed: 'Failed to save monitor rules',
+      runFailed: 'Failed to create probe run', saveFailed: 'Failed to save monitor rules',
       optionsFailed: 'Failed to load account or channel options',
       modelUpdateFailed: 'Failed to update the model probe scope',
       modelDiscoveryFailed: 'Failed to scan upstream models',

@@ -16,6 +16,10 @@ import (
 
 type upstreamPriceMonitorRepository struct{ db *sql.DB }
 
+type upstreamPriceEvidenceQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
 func NewUpstreamPriceMonitorRepository(db *sql.DB) service.UpstreamPriceMonitorRepository {
 	return &upstreamPriceMonitorRepository{db: db}
 }
@@ -501,22 +505,102 @@ func insertUpstreamPriceEvidence(ctx context.Context, tx *sql.Tx, evidence *doma
 	pricesJSON, _ := json.Marshal(evidence.Prices)
 	currentJSON, _ := json.Marshal(evidence.CurrentPrices)
 	suggestedJSON, _ := json.Marshal(evidence.SuggestedPrices)
+	displayCurrentJSON, _ := json.Marshal(evidence.DisplayPricesCurrent)
 	return tx.QueryRowContext(ctx, `INSERT INTO upstream_price_monitor_evidence
 		(run_id,account_id,model_name,billing_mode,status,source,reconciliation_status,context_key,observed_at,
-		 sample_count,local_delta,remote_delta,prices,current_prices,suggested_prices,
+		 sample_count,local_delta,remote_delta,prices,current_prices,suggested_prices,display_prices_current,
 		 display_multiplier_current,display_multiplier_suggested,last_error)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		RETURNING id,created_at`, evidence.RunID, evidence.AccountID, evidence.ModelName, evidence.BillingMode,
 		evidence.Status, evidence.Source, evidence.ReconciliationStatus, evidence.ContextKey, evidence.ObservedAt,
-		evidence.SampleCount, localJSON, remoteJSON, pricesJSON, currentJSON, suggestedJSON,
+		evidence.SampleCount, localJSON, remoteJSON, pricesJSON, currentJSON, suggestedJSON, displayCurrentJSON,
 		evidence.DisplayMultiplierCurrent, evidence.DisplayMultiplierSuggested, evidence.LastError).
 		Scan(&evidence.ID, &evidence.CreatedAt)
 }
 
+// FreezeEvidenceApplySnapshot persists the exact production pricing state that
+// is hashed into a completed monitor run. ApplyRun later compares its locked
+// rows with these values, so an administrator edit between sampling and apply
+// cannot be silently overwritten.
+func (r *upstreamPriceMonitorRepository) FreezeEvidenceApplySnapshot(
+	ctx context.Context,
+	runID int64,
+	channelIDs []int64,
+	decimals int,
+) ([]domain.UpstreamPriceEvidence, error) {
+	if r == nil || r.db == nil || runID <= 0 {
+		return nil, service.ErrUpstreamPriceRunNotApplicable
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	evidence, err := listUpstreamPriceEvidenceByRun(ctx, tx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if len(channelIDs) > 0 {
+		if err := r.enrichUpstreamPriceEvidenceBatch(ctx, tx, evidence, channelIDs, decimals); err != nil {
+			return nil, err
+		}
+	}
+	for i := range evidence {
+		currentJSON, marshalErr := json.Marshal(evidence[i].CurrentPrices)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		displayCurrentJSON, marshalErr := json.Marshal(evidence[i].DisplayPricesCurrent)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		result, updateErr := tx.ExecContext(ctx, `UPDATE upstream_price_monitor_evidence SET
+			current_prices=$2,display_prices_current=$3,display_multiplier_current=$4
+			WHERE id=$1 AND run_id=$5`, evidence[i].ID, currentJSON, displayCurrentJSON,
+			evidence[i].DisplayMultiplierCurrent, runID)
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 {
+			return nil, service.ErrUpstreamPriceSnapshotMismatch
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return evidence, nil
+}
+
 func (r *upstreamPriceMonitorRepository) ListEvidenceByRun(ctx context.Context, runID int64) ([]domain.UpstreamPriceEvidence, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,run_id,account_id,model_name,billing_mode,status,source,
+	out, err := listUpstreamPriceEvidenceByRun(ctx, r.db, runID)
+	if err != nil {
+		return nil, err
+	}
+	run, err := r.GetRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	scope, scopeOK := service.ReadUpstreamPriceRunApplyScope(run)
+	// A completed (or otherwise finalized) run must always expose the values
+	// frozen into its snapshot. Only a running run may be enriched from live
+	// channel/display pricing for an in-progress administrator view.
+	if run.Status == domain.UpstreamPriceMonitorRunStatusRunning && scopeOK {
+		if err := r.enrichUpstreamPriceEvidenceBatch(ctx, r.db, out, scope.ChannelIDs, scope.DisplayMultiplierDecimals); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func listUpstreamPriceEvidenceByRun(
+	ctx context.Context,
+	queryer upstreamPriceEvidenceQueryer,
+	runID int64,
+) ([]domain.UpstreamPriceEvidence, error) {
+	rows, err := queryer.QueryContext(ctx, `SELECT id,run_id,account_id,model_name,billing_mode,status,source,
 		reconciliation_status,context_key,observed_at,sample_count,local_delta,remote_delta,prices,current_prices,
-		suggested_prices,display_multiplier_current,display_multiplier_suggested,last_error,created_at
+		suggested_prices,display_prices_current,display_multiplier_current,display_multiplier_suggested,last_error,created_at
 		FROM upstream_price_monitor_evidence WHERE run_id=$1 ORDER BY account_id,LOWER(model_name),context_key,id`, runID)
 	if err != nil {
 		return nil, err
@@ -525,12 +609,12 @@ func (r *upstreamPriceMonitorRepository) ListEvidenceByRun(ctx context.Context, 
 	var out []domain.UpstreamPriceEvidence
 	for rows.Next() {
 		var evidence domain.UpstreamPriceEvidence
-		var localJSON, remoteJSON, pricesJSON, currentJSON, suggestedJSON []byte
+		var localJSON, remoteJSON, pricesJSON, currentJSON, suggestedJSON, displayCurrentJSON []byte
 		var currentMultiplier, suggestedMultiplier sql.NullFloat64
 		if err := rows.Scan(&evidence.ID, &evidence.RunID, &evidence.AccountID, &evidence.ModelName,
 			&evidence.BillingMode, &evidence.Status, &evidence.Source, &evidence.ReconciliationStatus,
 			&evidence.ContextKey, &evidence.ObservedAt, &evidence.SampleCount, &localJSON, &remoteJSON,
-			&pricesJSON, &currentJSON, &suggestedJSON, &currentMultiplier, &suggestedMultiplier,
+			&pricesJSON, &currentJSON, &suggestedJSON, &displayCurrentJSON, &currentMultiplier, &suggestedMultiplier,
 			&evidence.LastError, &evidence.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -538,7 +622,8 @@ func (r *upstreamPriceMonitorRepository) ListEvidenceByRun(ctx context.Context, 
 			raw   []byte
 			value any
 		}{{localJSON, &evidence.LocalDelta}, {remoteJSON, &evidence.RemoteDelta}, {pricesJSON, &evidence.Prices},
-			{currentJSON, &evidence.CurrentPrices}, {suggestedJSON, &evidence.SuggestedPrices}} {
+			{currentJSON, &evidence.CurrentPrices}, {suggestedJSON, &evidence.SuggestedPrices},
+			{displayCurrentJSON, &evidence.DisplayPricesCurrent}} {
 			if len(target.raw) > 0 {
 				if err := json.Unmarshal(target.raw, target.value); err != nil {
 					return nil, err
@@ -559,21 +644,12 @@ func (r *upstreamPriceMonitorRepository) ListEvidenceByRun(ctx context.Context, 
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	run, err := r.GetRun(ctx, runID)
-	if err != nil {
-		return nil, err
-	}
-	scope, scopeOK := service.ReadUpstreamPriceRunApplyScope(run)
-	if scopeOK {
-		if err := r.enrichUpstreamPriceEvidenceBatch(ctx, out, scope.ChannelIDs, scope.DisplayMultiplierDecimals); err != nil {
-			return nil, err
-		}
-	}
 	return out, nil
 }
 
 func (r *upstreamPriceMonitorRepository) enrichUpstreamPriceEvidenceBatch(
 	ctx context.Context,
+	queryer upstreamPriceEvidenceQueryer,
 	evidence []domain.UpstreamPriceEvidence,
 	channelIDs []int64,
 	decimals int,
@@ -590,7 +666,7 @@ func (r *upstreamPriceMonitorRepository) enrichUpstreamPriceEvidenceBatch(
 		models = append(models, model)
 	}
 
-	rows, err := r.db.QueryContext(ctx, `SELECT LOWER(cmp.models->>0),cmp.billing_mode,
+	rows, err := queryer.QueryContext(ctx, `SELECT LOWER(cmp.models->>0),cmp.billing_mode,
 		(COALESCE(base_iv.input_price,cmp.input_price*COALESCE(base_iv.input_multiplier,1))*1000000)::float8,
 		(COALESCE(base_iv.output_price,cmp.output_price*COALESCE(base_iv.output_multiplier,1))*1000000)::float8,
 		(COALESCE(base_iv.cache_write_price,cmp.cache_write_price*COALESCE(base_iv.cache_write_multiplier,1))*1000000)::float8,
@@ -607,7 +683,8 @@ func (r *upstreamPriceMonitorRepository) enrichUpstreamPriceEvidenceBatch(
 			WHERE pricing_id=cmp.id AND min_tokens=256000 AND max_tokens=512000 ORDER BY sort_order,id LIMIT 1) request_middle ON TRUE
 		LEFT JOIN LATERAL (SELECT per_request_price FROM channel_pricing_intervals
 			WHERE pricing_id=cmp.id AND min_tokens=512000 AND max_tokens IS NULL ORDER BY sort_order,id LIMIT 1) request_high ON TRUE
-		WHERE cmp.channel_id=ANY($1) AND jsonb_array_length(cmp.models)=1 AND LOWER(cmp.models->>0)=ANY($2)
+		WHERE cmp.channel_id=ANY($1) AND cmp.platform='openai' AND jsonb_array_length(cmp.models)=1
+		  AND LOWER(cmp.models->>0)=ANY($2)
 		ORDER BY array_position($1::bigint[],cmp.channel_id),cmp.id`, pq.Array(channelIDs), pq.Array(models))
 	if err != nil {
 		return err
@@ -645,27 +722,46 @@ func (r *upstreamPriceMonitorRepository) enrichUpstreamPriceEvidenceBatch(
 		current *float64
 		input   sql.NullString
 		output  sql.NullString
+		prices  domain.UpstreamPriceVector
 	}
 	displays := make(map[string]displayInfo)
-	displayRows, err := r.db.QueryContext(ctx, `SELECT LOWER(d.model_name),
+	displayRows, err := queryer.QueryContext(ctx, `SELECT LOWER(d.model_name),d.billing_mode,
 		COALESCE(d.model_multiplier,s.global_multiplier*COALESCE(p.multiplier,1))::float8,
-		d.official_input_per_million::text,d.official_output_per_million::text
+		d.official_input_per_million::text,d.official_output_per_million::text,
+		d.per_request_lte_256k::float8,d.per_request_256k_512k_override::float8,
+		d.per_request_gt_512k_override::float8
 		FROM display_model_prices d JOIN display_pricing_providers p ON p.provider=d.provider
 		CROSS JOIN display_pricing_settings s
-		WHERE d.billing_mode='token' AND LOWER(d.model_name)=ANY($1) ORDER BY d.id`, pq.Array(models))
+		WHERE d.platform='openai' AND d.billing_mode IN ('token','per_request')
+		  AND LOWER(d.model_name)=ANY($1) ORDER BY d.id`, pq.Array(models))
 	if err != nil {
 		return err
 	}
 	for displayRows.Next() {
-		var model string
-		var multiplier sql.NullFloat64
+		var model, billingMode string
+		var multiplier, low, middle, high sql.NullFloat64
 		var info displayInfo
-		if err := displayRows.Scan(&model, &multiplier, &info.input, &info.output); err != nil {
+		if err := displayRows.Scan(&model, &billingMode, &multiplier, &info.input, &info.output,
+			&low, &middle, &high); err != nil {
 			_ = displayRows.Close()
 			return err
 		}
 		info.current = nullFloat64Ptr(multiplier)
-		displays[model] = info
+		info.prices = domain.UpstreamPriceVector{
+			PerRequestLTE256K: nullFloat64Ptr(low), PerRequest256K512K: nullFloat64Ptr(middle),
+			PerRequestGT512K: nullFloat64Ptr(high),
+		}
+		key := model + "\x00" + billingMode
+		if previous, exists := displays[key]; exists {
+			if !sameFloatPtr(previous.current, info.current) || !sameUpstreamPriceVector(previous.prices, info.prices) ||
+				previous.input != info.input || previous.output != info.output {
+				_ = displayRows.Close()
+				return fmt.Errorf("%w: display prices disagree for model %s mode %s",
+					service.ErrUpstreamPriceSnapshotMismatch, model, billingMode)
+			}
+			continue
+		}
+		displays[key] = info
 	}
 	if err := displayRows.Err(); err != nil {
 		_ = displayRows.Close()
@@ -685,11 +781,12 @@ func (r *upstreamPriceMonitorRepository) enrichUpstreamPriceEvidenceBatch(
 		} else if value, ok := current[key]; ok {
 			evidence[i].CurrentPrices = value
 		}
-		if evidence[i].BillingMode != service.DisplayBillingModeToken {
+		info, ok := displays[key]
+		if !ok {
 			continue
 		}
-		info, ok := displays[strings.ToLower(evidence[i].ModelName)]
-		if !ok {
+		if evidence[i].BillingMode == service.DisplayBillingModePerRequest {
+			evidence[i].DisplayPricesCurrent = info.prices
 			continue
 		}
 		evidence[i].DisplayMultiplierCurrent = info.current

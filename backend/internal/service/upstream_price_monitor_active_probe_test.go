@@ -43,6 +43,9 @@ func (r *activeProbeTestRepository) ListRuns(context.Context, int, int, ...domai
 func (r *activeProbeTestRepository) ListEvidenceByRun(context.Context, int64) ([]domain.UpstreamPriceEvidence, error) {
 	return nil, nil
 }
+func (r *activeProbeTestRepository) FreezeEvidenceApplySnapshot(context.Context, int64, []int64, int) ([]domain.UpstreamPriceEvidence, error) {
+	return nil, nil
+}
 func (r *activeProbeTestRepository) GetCheckpoints(context.Context, int64, []string) (map[string]domain.UpstreamPriceUsageCheckpoint, error) {
 	return map[string]domain.UpstreamPriceUsageCheckpoint{"minimax-m3": r.checkpoint}, nil
 }
