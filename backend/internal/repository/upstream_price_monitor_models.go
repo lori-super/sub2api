@@ -176,7 +176,7 @@ func (r *upstreamPriceMonitorRepository) SetModelCatalogStatus(
 
 func syncUpstreamPriceManagedModels(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `WITH managed AS (
-		SELECT COALESCE(ARRAY_AGG(model_name ORDER BY LOWER(model_name)),'{}'::text[]) AS models
+		SELECT COALESCE(ARRAY_AGG(model_name::text ORDER BY LOWER(model_name)),ARRAY[]::text[]) AS models
 		FROM upstream_price_monitor_models WHERE status='managed'
 	)
 	UPDATE upstream_price_monitor_config SET domestic_models=managed.models,updated_at=NOW()
