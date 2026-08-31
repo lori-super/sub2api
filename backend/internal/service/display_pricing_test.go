@@ -77,15 +77,37 @@ func (r *stubDisplayPricingRepo) DeleteProvider(_ context.Context, provider stri
 func (r *stubDisplayPricingRepo) ListModels(context.Context) ([]DisplayModelPrice, error) {
 	return append([]DisplayModelPrice(nil), r.models...), nil
 }
-func (r *stubDisplayPricingRepo) GetModel(context.Context, int64) (*DisplayModelPrice, error) {
+func (r *stubDisplayPricingRepo) GetModel(_ context.Context, id int64) (*DisplayModelPrice, error) {
+	for i := range r.models {
+		if r.models[i].ID == id {
+			out := r.models[i]
+			return &out, nil
+		}
+	}
 	return nil, ErrDisplayPriceNotFound
 }
 func (r *stubDisplayPricingRepo) UpsertModel(_ context.Context, p *DisplayModelPrice) error {
-	p.ID = 1
+	for i := range r.models {
+		if displayModelKey(r.models[i].Platform, r.models[i].ModelName, r.models[i].BillingMode) == displayModelKey(p.Platform, p.ModelName, p.BillingMode) {
+			p.ID = r.models[i].ID
+			r.models[i] = *p
+			return nil
+		}
+	}
+	p.ID = int64(len(r.models) + 1)
+	r.models = append(r.models, *p)
 	return nil
 }
-func (r *stubDisplayPricingRepo) UpdateModel(context.Context, *DisplayModelPrice) error { return nil }
-func (r *stubDisplayPricingRepo) DeleteModel(context.Context, int64) error              { return nil }
+func (r *stubDisplayPricingRepo) UpdateModel(_ context.Context, p *DisplayModelPrice) error {
+	for i := range r.models {
+		if r.models[i].ID == p.ID {
+			r.models[i] = *p
+			return nil
+		}
+	}
+	return ErrDisplayPriceNotFound
+}
+func (r *stubDisplayPricingRepo) DeleteModel(context.Context, int64) error { return nil }
 
 func TestDisplayPricingBuildCatalogUsesPresentationPricesOnly(t *testing.T) {
 	providerRate := 0.2
@@ -128,7 +150,8 @@ func TestDisplayPricingBuildCatalogUsesPresentationPricesOnly(t *testing.T) {
 	require.InDelta(t, 3, *token.DisplayPrices.InputPerMillion, 1e-12)
 	require.InDelta(t, 6, *token.DisplayPrices.OutputPerMillion, 1e-12)
 	require.InDelta(t, 0.3, *token.EffectiveMultiplier, 1e-12)
-	require.InDelta(t, 0.25, catalog.Providers[0].EffectiveMultiplier, 1e-12)
+	require.Equal(t, DisplayGlobalMultiplier, catalog.GlobalMultiplier)
+	require.InDelta(t, 0.2, catalog.Providers[0].EffectiveMultiplier, 1e-12)
 	require.Equal(t, &DisplayPerRequestPrices{LTE256K: 0.01, From256K512K: 0.015, GT512K: 0.02}, once.PerRequest)
 	require.Nil(t, once.EffectiveMultiplier)
 	require.Nil(t, once.ModelMultiplier)
@@ -141,11 +164,11 @@ func TestDisplayPricingBuildCatalogUsesPresentationPricesOnly(t *testing.T) {
 func TestDisplayPricingBuildCatalogHidesUnconfiguredAndDisabledModels(t *testing.T) {
 	repo := &stubDisplayPricingRepo{
 		settings: DisplayPricingSettings{GlobalMultiplier: 1},
-		models:   []DisplayModelPrice{{ID: 1, Platform: "openai", ModelName: "disabled", Provider: "openai", BillingMode: DisplayBillingModeToken, Currency: "USD", Enabled: false}},
+		models:   []DisplayModelPrice{{ID: 1, Platform: "openai", ModelName: "deepseek-disabled", Provider: "deepseek", BillingMode: DisplayBillingModeToken, Currency: "CNY", Enabled: false}},
 	}
 	groups := []PlazaGroup{{Models: []PlazaModel{
-		{Name: "new-unconfigured", Platform: "openai", Pricing: &ChannelModelPricing{BillingMode: BillingMode(DisplayBillingModeToken)}},
-		{Name: "disabled", Platform: "openai", Pricing: &ChannelModelPricing{BillingMode: BillingMode(DisplayBillingModeToken)}},
+		{Name: "deepseek-new-unconfigured", Platform: "openai", Pricing: &ChannelModelPricing{BillingMode: BillingMode(DisplayBillingModeToken)}},
+		{Name: "deepseek-disabled", Platform: "openai", Pricing: &ChannelModelPricing{BillingMode: BillingMode(DisplayBillingModeToken)}},
 	}}}
 	catalog, err := NewDisplayPricingService(repo).BuildCatalog(context.Background(), groups)
 	require.NoError(t, err)
@@ -168,6 +191,8 @@ func TestDisplayPricingPerRequestOverridesAndDropsMultiplier(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Nil(t, item.ModelMultiplier)
+	require.Nil(t, item.PerRequest256K512KOverride)
+	require.Nil(t, item.PerRequestGT512KOverride)
 }
 
 func TestDisplayPricingImageUsesDisplayMultiplier(t *testing.T) {
@@ -180,11 +205,12 @@ func TestDisplayPricingImageUsesDisplayMultiplier(t *testing.T) {
 	groups := []PlazaGroup{{Models: []PlazaModel{{Name: "gpt-image-2", Platform: "openai", Pricing: &ChannelModelPricing{BillingMode: BillingMode(DisplayBillingModeImage)}}}}}
 	catalog, err := NewDisplayPricingService(repo).BuildCatalog(context.Background(), groups)
 	require.NoError(t, err)
-	require.InDelta(t, 0.025, catalog.Providers[0].Models[0].ImagePrices[0].Price, 1e-12)
+	require.Equal(t, DisplayGlobalMultiplier, catalog.GlobalMultiplier)
+	require.InDelta(t, 0.02, catalog.Providers[0].Models[0].ImagePrices[0].Price, 1e-12)
 	require.InDelta(t, 0.04, catalog.Providers[0].Models[0].ImageBasePrices[0].Price, 1e-12)
 }
 
-func TestDisplayPricingBuildCatalogRecomputesLatestGlobalMultiplier(t *testing.T) {
+func TestDisplayPricingBuildCatalogLocksGlobalMultiplierAtOne(t *testing.T) {
 	providerRate := 0.125
 	input := 10.0
 	settingsUpdated := time.Unix(10, 0)
@@ -200,6 +226,7 @@ func TestDisplayPricingBuildCatalogRecomputesLatestGlobalMultiplier(t *testing.T
 
 	first, err := svc.BuildCatalog(context.Background(), groups)
 	require.NoError(t, err)
+	require.Equal(t, DisplayGlobalMultiplier, first.GlobalMultiplier)
 	require.InDelta(t, 0.125, *first.Providers[0].Models[0].EffectiveMultiplier, 1e-12)
 	require.InDelta(t, 1.25, *first.Providers[0].Models[0].DisplayPrices.InputPerMillion, 1e-12)
 	require.Equal(t, providerUpdated, first.UpdatedAt)
@@ -209,20 +236,89 @@ func TestDisplayPricingBuildCatalogRecomputesLatestGlobalMultiplier(t *testing.T
 	second, err := svc.BuildCatalog(context.Background(), groups)
 	require.NoError(t, err)
 	require.Equal(t, 2, repo.settingsReads)
-	require.InDelta(t, 0.15, second.Providers[0].EffectiveMultiplier, 1e-12)
-	require.InDelta(t, 0.15, *second.Providers[0].Models[0].EffectiveMultiplier, 1e-12)
-	require.InDelta(t, 1.5, *second.Providers[0].Models[0].DisplayPrices.InputPerMillion, 1e-12)
+	require.Equal(t, DisplayGlobalMultiplier, second.GlobalMultiplier)
+	require.InDelta(t, 0.125, second.Providers[0].EffectiveMultiplier, 1e-12)
+	require.InDelta(t, 0.125, *second.Providers[0].Models[0].EffectiveMultiplier, 1e-12)
+	require.InDelta(t, 1.25, *second.Providers[0].Models[0].DisplayPrices.InputPerMillion, 1e-12)
 	require.Equal(t, repo.settings.UpdatedAt, second.UpdatedAt)
 }
 
-func TestDisplayPricingModelCurrencyMustMatchProvider(t *testing.T) {
+func TestDisplayPricingModelCurrencyUsesProviderCurrency(t *testing.T) {
 	repo := &stubDisplayPricingRepo{providers: []DisplayPricingProvider{{Provider: "deepseek", DisplayName: "DeepSeek", Currency: "CNY"}}}
 	input := 1.0
-	_, err := NewDisplayPricingService(repo).UpsertModel(context.Background(), DisplayModelPrice{
+	model, err := NewDisplayPricingService(repo).UpsertModel(context.Background(), DisplayModelPrice{
 		Platform: "openai", ModelName: "deepseek-test", Provider: "deepseek", BillingMode: DisplayBillingModeToken,
 		Currency: "USD", Enabled: true, OfficialInputPerMillion: &input,
 	})
-	require.ErrorIs(t, err, ErrDisplayPriceInvalid)
+	require.NoError(t, err)
+	require.Equal(t, DisplayCurrencyCNY, model.Currency)
+}
+
+func TestDisplayPricingGlobalMultiplierRejectsHiddenMarkup(t *testing.T) {
+	repo := &stubDisplayPricingRepo{settings: DisplayPricingSettings{GlobalMultiplier: 1.2}}
+	svc := NewDisplayPricingService(repo)
+
+	settings, err := svc.GetSettings(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, DisplayGlobalMultiplier, settings.GlobalMultiplier)
+
+	_, err = svc.UpdateSettings(context.Background(), 1.2)
+	require.ErrorIs(t, err, ErrDisplayGlobalLocked)
+	require.Equal(t, 1.2, repo.settings.GlobalMultiplier, "rejected update must not write")
+
+	settings, err = svc.UpdateSettings(context.Background(), DisplayGlobalMultiplier)
+	require.NoError(t, err)
+	require.Equal(t, DisplayGlobalMultiplier, repo.settings.GlobalMultiplier)
+}
+
+func TestDisplayPricingForeignModelsArePerRequestOnly(t *testing.T) {
+	base := 0.012
+	repo := &stubDisplayPricingRepo{
+		providers: []DisplayPricingProvider{
+			{Provider: "anthropic", DisplayName: "Anthropic", Currency: "USD"},
+			{Provider: "gemini", DisplayName: "Gemini", Currency: "USD"},
+			{Provider: "grok", DisplayName: "Grok", Currency: "USD"},
+		},
+		models: []DisplayModelPrice{
+			{ID: 1, Platform: "anthropic", ModelName: "claude-token", Provider: "anthropic", BillingMode: DisplayBillingModeToken, Currency: "USD", Enabled: true},
+			{ID: 2, Platform: "anthropic", ModelName: "claude-once", Provider: "anthropic", BillingMode: DisplayBillingModePerRequest, Currency: "USD", Enabled: true, PerRequestLTE256K: &base},
+		},
+	}
+	svc := NewDisplayPricingService(repo)
+
+	models, err := svc.ListModels(context.Background())
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	require.Equal(t, DisplayBillingModePerRequest, models[0].BillingMode)
+
+	for _, tc := range []struct{ provider, model string }{
+		{"anthropic", "claude-new"}, {"gemini", "gemini-new"}, {"grok", "grok-new"},
+	} {
+		_, err = svc.UpsertModel(context.Background(), DisplayModelPrice{
+			Platform: "openai", ModelName: tc.model, Provider: tc.provider,
+			BillingMode: DisplayBillingModeToken, Currency: "USD", Enabled: true,
+		})
+		require.ErrorIs(t, err, ErrDisplayPriceInvalid)
+
+		created, createErr := svc.UpsertModel(context.Background(), DisplayModelPrice{
+			Platform: "openai", ModelName: tc.model, Provider: tc.provider,
+			BillingMode: DisplayBillingModePerRequest, Currency: "USD", Enabled: true,
+			PerRequestLTE256K: &base,
+		})
+		require.NoError(t, createErr)
+		require.Equal(t, DisplayBillingModePerRequest, created.BillingMode)
+	}
+
+	catalog, err := svc.BuildCatalog(context.Background(), nil)
+	require.NoError(t, err)
+	var catalogModels int
+	for _, provider := range catalog.Providers {
+		for _, model := range provider.Models {
+			require.Equal(t, DisplayBillingModePerRequest, model.BillingMode)
+			catalogModels++
+		}
+	}
+	require.Equal(t, 4, catalogModels, "all foreign per-request rows stay public while foreign token rows stay hidden")
 }
 
 func TestDisplayPricingModelMultiplierIsAbsoluteOverride(t *testing.T) {

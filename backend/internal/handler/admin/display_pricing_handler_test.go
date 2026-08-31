@@ -161,8 +161,9 @@ func TestDisplayPricingProviderCRUDHandlers(t *testing.T) {
 	require.Contains(t, update.Body.String(), `"per_request_note":"Updated request note"`)
 	require.Contains(t, update.Body.String(), `"image_note":"Updated image note"`)
 
+	repo.providers["deepseek"] = service.DisplayPricingProvider{Provider: "deepseek", DisplayName: "DeepSeek", Currency: "CNY"}
 	createModel := httptest.NewRecorder()
-	modelBody := `{"platform":"openai","model_name":"custom-model","provider":"custom","billing_mode":"token","currency":"USD","model_note":"  Launch note  ","official_price_source":"herohao_aggregate","official_price_source_url":"https://sub2.herohao.top/pricing/api/pricing","official_price_synced_at":"2026-08-30T10:00:00Z"}`
+	modelBody := `{"platform":"openai","model_name":"deepseek-custom-model","provider":"deepseek","billing_mode":"token","currency":"CNY","model_note":"  Launch note  ","official_price_source":"herohao_aggregate","official_price_source_url":"https://sub2.herohao.top/pricing/api/pricing","official_price_synced_at":"2026-08-30T10:00:00Z"}`
 	modelReq := httptest.NewRequest(http.MethodPost, "/models", strings.NewReader(modelBody))
 	modelReq.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(createModel, modelReq)

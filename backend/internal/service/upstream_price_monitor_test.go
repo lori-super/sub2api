@@ -41,6 +41,55 @@ func TestNormalizeUpstreamPriceMonitorConfigKeepsIndependentPerRequestScope(t *t
 	require.Equal(t, []string{"Auto-Model", "gpt-5.6"}, cfg.PerRequestModels)
 }
 
+func TestSyncPerRequestDisplayCatalogKeepsForeignModelsAndAppliesMarkupOnce(t *testing.T) {
+	upstreamBase, ignoredMiddle, ignoredHigh := 0.01, 9.0, 11.0
+	legacyBase, legacyMiddle, legacyHigh := 99.0, 100.0, 101.0
+	displayRepo := &stubDisplayPricingRepo{
+		providers: []DisplayPricingProvider{
+			{Provider: "anthropic", DisplayName: "Anthropic", Currency: DisplayCurrencyUSD},
+			{Provider: "gemini", DisplayName: "Gemini", Currency: DisplayCurrencyUSD},
+			{Provider: "grok", DisplayName: "Grok", Currency: DisplayCurrencyUSD},
+		},
+		models: []DisplayModelPrice{
+			{ID: 41, Platform: "openai", ModelName: "claude-4", Provider: "anthropic", BillingMode: DisplayBillingModePerRequest, Currency: DisplayCurrencyUSD, Enabled: true, PerRequestLTE256K: &legacyBase, PerRequest256K512KOverride: &legacyMiddle, PerRequestGT512KOverride: &legacyHigh},
+			{ID: 42, Platform: "openai", ModelName: "claude-removed", Provider: "anthropic", BillingMode: DisplayBillingModePerRequest, Currency: DisplayCurrencyUSD, Enabled: true, PerRequestLTE256K: &legacyBase},
+		},
+	}
+	monitorRepo := &upstreamPriceAutoApplyRepository{activeProbeTestRepository: &activeProbeTestRepository{}}
+	svc := &UpstreamPriceMonitorService{
+		repo: monitorRepo, displayPricing: NewDisplayPricingService(displayRepo),
+	}
+	cfg := domain.DefaultUpstreamPriceMonitorConfig()
+	cfg.Markup = 7 // channel monitor markup must not leak into display pricing
+	cfg.PerRequestModels = []string{"claude-4", "claude-removed"}
+	prices := map[string]domain.UpstreamPriceVector{
+		"claude-4": {PerRequestLTE256K: &upstreamBase, PerRequest256K512K: &ignoredMiddle, PerRequestGT512K: &ignoredHigh},
+		"gemini-3": {PerRequestLTE256K: &upstreamBase},
+		"grok-5":   {PerRequestLTE256K: &upstreamBase},
+	}
+
+	managed, err := svc.syncPerRequestDisplayCatalog(context.Background(), prices, &cfg)
+	require.NoError(t, err)
+	require.Equal(t, []string{"claude-4", "gemini-3", "grok-5"}, managed)
+	require.Equal(t, managed, cfg.PerRequestModels)
+	require.NotNil(t, monitorRepo.updated)
+	require.Equal(t, managed, monitorRepo.updated.PerRequestModels)
+
+	modelsByName := make(map[string]DisplayModelPrice, len(displayRepo.models))
+	for _, model := range displayRepo.models {
+		modelsByName[model.ModelName] = model
+	}
+	for _, name := range managed {
+		model := modelsByName[name]
+		require.True(t, model.Enabled, name)
+		require.Equal(t, DisplayBillingModePerRequest, model.BillingMode, name)
+		require.InDelta(t, 0.012, *model.PerRequestLTE256K, 1e-12, name)
+		require.Nil(t, model.PerRequest256K512KOverride, name)
+		require.Nil(t, model.PerRequestGT512KOverride, name)
+	}
+	require.False(t, modelsByName["claude-removed"].Enabled)
+}
+
 func TestNormalizeUpstreamPriceMonitorConfigPreservesExplicitEmptyScope(t *testing.T) {
 	cfg := domain.DefaultUpstreamPriceMonitorConfig()
 	cfg.DomesticModels = []string{}

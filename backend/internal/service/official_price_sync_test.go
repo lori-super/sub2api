@@ -47,7 +47,7 @@ func TestOfficialPricePreviewIsReadOnlyAndExplainsIneligibleModels(t *testing.T)
 	preview, err := svc.Preview(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, 0, repo.applyCalls)
-	require.Len(t, preview.Items, 2)
+	require.Len(t, preview.Items, 1)
 	items := map[int64]OfficialPricePreviewItem{}
 	for _, item := range preview.Items {
 		items[item.ModelID] = item
@@ -56,7 +56,8 @@ func TestOfficialPricePreviewIsReadOnlyAndExplainsIneligibleModels(t *testing.T)
 	require.Equal(t, 9.8, *items[1].Proposed.InputPerMillion)
 	require.True(t, items[1].Diff.HasChanges)
 	require.NotEmpty(t, items[1].ProposalHash)
-	require.Equal(t, OfficialPriceReasonCurrencyMismatch, items[3].Reason)
+	_, foreignIncluded := items[3]
+	require.False(t, foreignIncluded)
 }
 
 func TestOfficialPriceApplyRecomputesAndPreservesNonOfficialFields(t *testing.T) {

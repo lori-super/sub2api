@@ -78,12 +78,18 @@
             </label>
             <div class="mt-2 flex gap-2">
               <div class="relative flex-1">
-                <input v-model.number="globalMultiplier" type="number" min="0.01" step="0.01" class="input pr-9 font-mono" />
+                <input
+                  :value="FIXED_GLOBAL_MULTIPLIER"
+                  type="number"
+                  readonly
+                  aria-readonly="true"
+                  class="input cursor-default bg-gray-100 pr-9 font-mono text-gray-600 dark:bg-dark-700 dark:text-dark-300"
+                />
                 <span class="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-gray-400">×</span>
               </div>
-              <button class="btn btn-primary" :disabled="savingGlobal" @click="saveGlobal">
-                {{ savingGlobal ? t('common.saving') : t('common.save') }}
-              </button>
+              <span class="inline-flex items-center rounded-xl bg-emerald-50 px-3 text-sm font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
+                {{ t('admin.displayPricing.global.fixed') }}
+              </span>
             </div>
             <p class="mt-3 text-xs leading-5 text-gray-400 dark:text-dark-500">
               {{ t('admin.displayPricing.global.priority') }}
@@ -403,9 +409,19 @@
             <p class="form-section-hint">{{ t('admin.displayPricing.editor.perRequestFormula') }}</p>
           </div>
           <div class="grid gap-3 sm:grid-cols-3">
-            <PriceInput v-model="form.per_request_lte_256k" label="≤ 256K" :currency="form.currency" />
-            <PriceInput v-model="form.per_request_256k_512k_override" :label="t('admin.displayPricing.editor.tier2Override')" :currency="form.currency" :placeholder="derivedTier(1.5)" />
-            <PriceInput v-model="form.per_request_gt_512k_override" :label="t('admin.displayPricing.editor.tier3Override')" :currency="form.currency" :placeholder="derivedTier(2)" />
+            <PriceInput v-model="form.per_request_lte_256k" label="≤ 256K ·1×" :currency="form.currency" required />
+            <PriceInput
+              :model-value="derivedTier(1.5)"
+              :label="t('admin.displayPricing.editor.tier2Derived')"
+              :currency="form.currency"
+              readonly
+            />
+            <PriceInput
+              :model-value="derivedTier(2)"
+              :label="t('admin.displayPricing.editor.tier3Derived')"
+              :currency="form.currency"
+              readonly
+            />
           </div>
         </section>
 
@@ -511,13 +527,13 @@ import PriceInput from '@/components/admin/displayPricing/PriceInput.vue'
 import OfficialPricingView from '@/views/admin/OfficialPricingView.vue'
 import { platformLabel } from '@/utils/platformColors'
 import { notifyDisplayPricingUpdated } from '@/utils/displayPricingSync'
+import { extractApiErrorMessage } from '@/utils/apiError'
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const FIXED_GLOBAL_MULTIPLIER = 1
 const activePanel = ref<'configuration' | 'official'>('configuration')
 const loading = ref(true)
-const globalMultiplier = ref(1)
-const savingGlobal = ref(false)
 const savingProvider = ref(false)
 const savingModel = ref(false)
 const providerDrafts = ref<DisplayPricingProvider[]>([])
@@ -608,13 +624,11 @@ const filteredDiscovered = computed(() => {
 async function loadData(): Promise<void> {
   loading.value = true
   try {
-    const [settings, providers, configuredModels, discovered] = await Promise.all([
-      adminAPI.displayPricing.getSettings(),
+    const [providers, configuredModels, discovered] = await Promise.all([
       adminAPI.displayPricing.listProviders(),
       adminAPI.displayPricing.listModels(),
       adminAPI.displayPricing.listDiscoveredModels()
     ])
-    globalMultiplier.value = settings.global_multiplier
     providerDrafts.value = sortProviders(providers.map((provider) => ({
       ...provider,
       logo_key: provider.logo_key || provider.provider,
@@ -630,20 +644,6 @@ async function loadData(): Promise<void> {
     console.error(error)
   } finally {
     loading.value = false
-  }
-}
-
-async function saveGlobal(): Promise<void> {
-  savingGlobal.value = true
-  try {
-    const result = await adminAPI.displayPricing.updateSettings(Number(globalMultiplier.value))
-    globalMultiplier.value = result.global_multiplier
-    notifyDisplayPricingUpdated()
-    appStore.showSuccess(t('admin.displayPricing.saved'))
-  } catch {
-    appStore.showError(t('admin.displayPricing.saveFailed'))
-  } finally {
-    savingGlobal.value = false
   }
 }
 
@@ -702,8 +702,8 @@ async function saveProvider(): Promise<void> {
     closeProviderEditor()
     notifyDisplayPricingUpdated()
     appStore.showSuccess(t('admin.displayPricing.saved'))
-  } catch {
-    appStore.showError(t('admin.displayPricing.saveFailed'))
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, t('admin.displayPricing.saveFailed')))
   } finally {
     savingProvider.value = false
   }
@@ -748,6 +748,10 @@ function openCreate(seed?: Partial<DisplayPricingModelInput>): void {
 function openEdit(model: DisplayPricingModel): void {
   editingId.value = model.id
   Object.assign(form, model)
+  if (model.billing_mode === 'per_request') {
+    form.per_request_256k_512k_override = null
+    form.per_request_gt_512k_override = null
+  }
   form.image_prices = (model.image_prices ?? []).map((tier) => ({ ...tier }))
   showEditor.value = true
 }
@@ -758,19 +762,32 @@ function closeEditor(): void {
 }
 
 function normalizedPayload(): DisplayPricingModelInput {
+  const isToken = form.billing_mode === 'token'
+  const isPerRequest = form.billing_mode === 'per_request'
+  const isImage = form.billing_mode === 'image'
   return {
-    ...form,
+    platform: form.platform.trim(),
+    model_name: form.model_name.trim(),
+    provider: form.provider.trim(),
+    billing_mode: form.billing_mode,
+    currency: form.currency,
+    enabled: Boolean(form.enabled),
     model_note: form.model_note.trim(),
     sort_order: Number(form.sort_order) || 0,
-    official_input_per_million: nullableNumber(form.official_input_per_million),
-    official_output_per_million: nullableNumber(form.official_output_per_million),
-    official_cache_write_per_million: nullableNumber(form.official_cache_write_per_million),
-    official_cache_read_per_million: nullableNumber(form.official_cache_read_per_million),
-    model_multiplier: nullableNumber(form.model_multiplier),
-    per_request_lte_256k: nullableNumber(form.per_request_lte_256k),
-    per_request_256k_512k_override: nullableNumber(form.per_request_256k_512k_override),
-    per_request_gt_512k_override: nullableNumber(form.per_request_gt_512k_override),
-    image_prices: form.image_prices.map((tier) => ({ label: tier.label.trim(), price: Number(tier.price) }))
+    official_input_per_million: isToken ? nullableNumber(form.official_input_per_million) : null,
+    official_output_per_million: isToken ? nullableNumber(form.official_output_per_million) : null,
+    official_cache_write_per_million: isToken ? nullableNumber(form.official_cache_write_per_million) : null,
+    official_cache_read_per_million: isToken ? nullableNumber(form.official_cache_read_per_million) : null,
+    official_price_source: isToken ? form.official_price_source : undefined,
+    official_price_source_url: isToken ? form.official_price_source_url : undefined,
+    official_price_synced_at: isToken ? form.official_price_synced_at : null,
+    model_multiplier: isPerRequest ? null : nullableNumber(form.model_multiplier),
+    per_request_lte_256k: isPerRequest ? nullableNumber(form.per_request_lte_256k) : null,
+    per_request_256k_512k_override: null,
+    per_request_gt_512k_override: null,
+    image_prices: isImage
+      ? form.image_prices.map((tier) => ({ label: tier.label.trim(), price: Number(tier.price) }))
+      : []
   }
 }
 
@@ -789,8 +806,8 @@ async function saveModel(): Promise<void> {
     closeEditor()
     notifyDisplayPricingUpdated()
     appStore.showSuccess(t('admin.displayPricing.saved'))
-  } catch {
-    appStore.showError(t('admin.displayPricing.saveFailed'))
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, t('admin.displayPricing.saveFailed')))
   } finally {
     savingModel.value = false
   }
@@ -843,9 +860,9 @@ function sortProviders(providers: DisplayPricingProvider[]): DisplayPricingProvi
   )
 }
 
-function derivedTier(multiplier: number): string {
+function derivedTier(multiplier: number): number | null {
   const base = nullableNumber(form.per_request_lte_256k)
-  return base == null ? t('admin.displayPricing.editor.autoDerived') : String(Math.round(base * multiplier * 1e8) / 1e8)
+  return base == null ? null : Math.round(base * multiplier * 1e8) / 1e8
 }
 
 function providerLabel(provider: string): string {

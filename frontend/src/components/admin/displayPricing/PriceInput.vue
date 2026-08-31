@@ -11,8 +11,10 @@
         min="0"
         step="any"
         :required="required"
+        :readonly="readonly"
+        :aria-readonly="readonly"
         :placeholder="placeholder"
-        class="input pl-8 font-mono"
+        class="input pl-8 font-mono read-only:cursor-default read-only:bg-gray-100 read-only:text-gray-600 dark:read-only:bg-dark-700 dark:read-only:text-dark-300"
         @input="handleInput"
       />
     </div>
@@ -29,10 +31,12 @@ withDefaults(
     currency: DisplayPriceCurrency
     placeholder?: string
     required?: boolean
+    readonly?: boolean
   }>(),
   {
     placeholder: '',
-    required: false
+    required: false,
+    readonly: false
   }
 )
 

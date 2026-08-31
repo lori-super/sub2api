@@ -729,8 +729,9 @@ func (r *upstreamPriceMonitorRepository) enrichUpstreamPriceEvidenceBatch(
 	displayRows, err := queryer.QueryContext(ctx, `SELECT LOWER(d.model_name),d.billing_mode,
 		COALESCE(d.model_multiplier,s.global_multiplier*COALESCE(p.multiplier,1))::float8,
 		d.official_input_per_million::text,d.official_output_per_million::text,
-		d.per_request_lte_256k::float8,d.per_request_256k_512k_override::float8,
-		d.per_request_gt_512k_override::float8
+		d.per_request_lte_256k::float8,
+		(d.per_request_lte_256k*1.5)::float8,
+		(d.per_request_lte_256k*2)::float8
 		FROM display_model_prices d JOIN display_pricing_providers p ON p.provider=d.provider
 		CROSS JOIN display_pricing_settings s
 		WHERE d.platform='openai' AND d.billing_mode IN ('token','per_request')

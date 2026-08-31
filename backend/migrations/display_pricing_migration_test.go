@@ -101,3 +101,23 @@ func TestDisplayOfficialPriceSourceMigrationIsPresentationOnly(t *testing.T) {
 	require.NotContains(t, strings.ToLower(sql), "update channels")
 	require.NotContains(t, strings.ToLower(sql), "channel_model_pricing")
 }
+
+func TestDisplayPricingRulesMigrationLocksFinalMultiplierAndPerRequestShape(t *testing.T) {
+	content, err := FS.ReadFile("241_display_pricing_rules.sql")
+	require.NoError(t, err)
+	sql := string(content)
+	normalized := strings.Join(strings.Fields(sql), " ")
+
+	require.Contains(t, normalized, "SET global_multiplier = 1.000000")
+	require.Contains(t, normalized, "CHECK (global_multiplier = 1.000000)")
+	require.Contains(t, normalized, "WHEN multiplier IN (0.100000, 0.125000) THEN 0.120000")
+	require.Contains(t, normalized, "WHEN multiplier IN (0.035000, 0.043750) THEN 0.042000")
+	require.Contains(t, normalized, "billing_mode <> 'token' OR provider IN ('deepseek', 'zhipu', 'moonshot', 'minimax', 'qwen', 'mimo', 'hunyuan') OR enabled = FALSE")
+	require.Contains(t, normalized, "per_request_256k_512k_override = NULL")
+	require.Contains(t, normalized, "per_request_gt_512k_override = NULL")
+	require.Contains(t, normalized, "billing_mode <> 'per_request' OR (per_request_256k_512k_override IS NULL AND per_request_gt_512k_override IS NULL)")
+
+	for _, productionTable := range []string{"groups", "channels", "channel_model_pricing", "usage_logs"} {
+		require.NotRegexp(t, regexp.MustCompile(`(?mi)^\s*(?:UPDATE|ALTER|INSERT\s+INTO|DELETE\s+FROM)\s+`+regexp.QuoteMeta(productionTable)+`\b`), sql)
+	}
+}

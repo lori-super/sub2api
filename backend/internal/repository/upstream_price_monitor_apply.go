@@ -711,8 +711,8 @@ func (r *upstreamPriceMonitorRepository) RollbackRun(ctx context.Context, runID 
 	}
 	for _, row := range snapshot.Displays {
 		result, err := tx.ExecContext(ctx, `UPDATE display_model_prices SET model_multiplier=$2::numeric,
-			per_request_lte_256k=$3::numeric,per_request_256k_512k_override=$4::numeric,
-			per_request_gt_512k_override=$5::numeric,updated_at=NOW()
+			per_request_lte_256k=$3::numeric,per_request_256k_512k_override=NULL,
+			per_request_gt_512k_override=NULL,updated_at=NOW()
 			WHERE id=$1 AND platform='openai' AND model_multiplier IS NOT DISTINCT FROM $6::numeric
 			  AND per_request_lte_256k IS NOT DISTINCT FROM $7::numeric
 			  AND per_request_256k_512k_override IS NOT DISTINCT FROM $8::numeric
@@ -1104,15 +1104,10 @@ func applyUpstreamPerRequestEvidence(
 			_ = displays.Close()
 			return matched, false, parseErr
 		}
-		actualMiddle, parseErr := numericStringFloatPtr(row.PerRequest256K512K)
-		if parseErr != nil {
-			_ = displays.Close()
-			return matched, false, parseErr
-		}
-		actualHigh, parseErr := numericStringFloatPtr(row.PerRequestGT512K)
-		if parseErr != nil {
-			_ = displays.Close()
-			return matched, false, parseErr
+		var actualMiddle, actualHigh *float64
+		if actualLow != nil {
+			middle, high := *actualLow*1.5, *actualLow*2
+			actualMiddle, actualHigh = &middle, &high
 		}
 		actual := domain.UpstreamPriceVector{
 			PerRequestLTE256K: actualLow, PerRequest256K512K: actualMiddle, PerRequestGT512K: actualHigh,
@@ -1136,18 +1131,16 @@ func applyUpstreamPerRequestEvidence(
 	}
 	for _, row := range lockedDisplays {
 		result, err := tx.ExecContext(ctx, `UPDATE display_model_prices SET per_request_lte_256k=$2::numeric,
-			per_request_256k_512k_override=$3::numeric,per_request_gt_512k_override=$4::numeric,updated_at=NOW()
+			per_request_256k_512k_override=NULL,per_request_gt_512k_override=NULL,updated_at=NOW()
 			WHERE id=$1 AND platform='openai' AND (per_request_lte_256k IS DISTINCT FROM $2::numeric OR
-				per_request_256k_512k_override IS DISTINCT FROM $3::numeric OR
-				per_request_gt_512k_override IS DISTINCT FROM $4::numeric)`, row.ID,
-			decimalString(evidence.Suggested.PerRequestLTE256K), decimalString(evidence.Suggested.PerRequest256K512K),
-			decimalString(evidence.Suggested.PerRequestGT512K))
+				per_request_256k_512k_override IS NOT NULL OR
+				per_request_gt_512k_override IS NOT NULL)`, row.ID,
+			decimalString(evidence.Suggested.PerRequestLTE256K))
 		if err != nil {
 			return matched, false, err
 		}
 		if affected, _ := result.RowsAffected(); affected > 0 {
-			row = displayRollbackWithAfter(row, nil, decimalString(evidence.Suggested.PerRequestLTE256K),
-				decimalString(evidence.Suggested.PerRequest256K512K), decimalString(evidence.Suggested.PerRequestGT512K))
+			row = displayRollbackWithAfter(row, nil, decimalString(evidence.Suggested.PerRequestLTE256K), nil, nil)
 			snapshot.Displays = append(snapshot.Displays, row)
 			changed = true
 		}

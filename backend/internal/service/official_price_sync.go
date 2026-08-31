@@ -135,7 +135,7 @@ func (s *OfficialPriceSyncService) Preview(ctx context.Context) (*OfficialPriceP
 	}
 	items := make([]OfficialPricePreviewItem, 0, len(models))
 	for i := range models {
-		if models[i].BillingMode != DisplayBillingModeToken {
+		if models[i].BillingMode != DisplayBillingModeToken || !isDomesticDisplayProvider(models[i].Provider) {
 			continue
 		}
 		item, _ := buildOfficialPriceProposal(models[i], snapshot)
@@ -163,6 +163,9 @@ func (s *OfficialPriceSyncService) Apply(ctx context.Context, selections []Offic
 	}
 	modelByID := make(map[int64]DisplayModelPrice, len(models))
 	for i := range models {
+		if models[i].BillingMode != DisplayBillingModeToken || !isDomesticDisplayProvider(models[i].Provider) {
+			continue
+		}
 		modelByID[models[i].ID] = models[i]
 	}
 

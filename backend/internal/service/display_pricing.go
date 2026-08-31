@@ -20,6 +20,11 @@ const (
 	DisplayCurrencyCNY           = "CNY"
 	DisplayCurrencyUSD           = "USD"
 	DisplayOfficialPriceManual   = "manual"
+	DisplayPerRequestMarkup      = 1.2
+	// DisplayGlobalMultiplier is deliberately locked. The customer-facing
+	// provider/model multiplier already contains the final downstream markup,
+	// which prevents an invisible second multiplication.
+	DisplayGlobalMultiplier = 1.0
 )
 
 var (
@@ -29,6 +34,7 @@ var (
 	ErrDisplayProviderNotFound    = infraerrors.NotFound("DISPLAY_PROVIDER_NOT_FOUND", "display pricing provider not found")
 	ErrDisplayProviderExists      = infraerrors.Conflict("DISPLAY_PROVIDER_EXISTS", "display pricing provider already exists")
 	ErrDisplayPricingInvalidValue = infraerrors.BadRequest("DISPLAY_PRICING_INVALID_VALUE", "display pricing values must be finite and non-negative")
+	ErrDisplayGlobalLocked        = infraerrors.BadRequest("DISPLAY_PRICING_GLOBAL_LOCKED", "display pricing global multiplier is fixed at 1")
 )
 
 var displayProviderKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
@@ -38,9 +44,10 @@ const (
 	maxDisplayModelNoteLength    = 1000
 )
 
-// DisplayPricingSettings is the singleton presentation-only multiplier.
-// Without a model override, effective = global * (provider override ?? 1).
-// A model override is an absolute fixed multiplier and ignores both values.
+// DisplayPricingSettings is the singleton presentation-only compatibility
+// setting. GlobalMultiplier is always 1. Provider/model fields store the final
+// customer-facing multiplier (upstream multiplier with the 20% markup already
+// included), so the public calculation is explicit and directly auditable.
 // It is intentionally unrelated to Group.RateMultiplier and all billing services.
 type DisplayPricingSettings struct {
 	GlobalMultiplier float64   `json:"global_multiplier"`
@@ -119,14 +126,20 @@ func NewDisplayPricingService(repo DisplayPricingRepository) *DisplayPricingServ
 }
 
 func (s *DisplayPricingService) GetSettings(ctx context.Context) (*DisplayPricingSettings, error) {
-	return s.repo.GetSettings(ctx)
+	settings, err := s.repo.GetSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Fail closed for databases that have not run the locking migration yet.
+	settings.GlobalMultiplier = DisplayGlobalMultiplier
+	return settings, nil
 }
 
 func (s *DisplayPricingService) UpdateSettings(ctx context.Context, multiplier float64) (*DisplayPricingSettings, error) {
-	if !validPositive(multiplier) {
-		return nil, ErrDisplayPricingInvalidValue
+	if multiplier != DisplayGlobalMultiplier {
+		return nil, ErrDisplayGlobalLocked
 	}
-	settings := &DisplayPricingSettings{GlobalMultiplier: multiplier}
+	settings := &DisplayPricingSettings{GlobalMultiplier: DisplayGlobalMultiplier}
 	if err := s.repo.UpdateSettings(ctx, settings); err != nil {
 		return nil, fmt.Errorf("update display pricing settings: %w", err)
 	}
@@ -173,7 +186,20 @@ func (s *DisplayPricingService) DeleteProvider(ctx context.Context, providerKey 
 }
 
 func (s *DisplayPricingService) ListModels(ctx context.Context) ([]DisplayModelPrice, error) {
-	return s.repo.ListModels(ctx)
+	models, err := s.repo.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Foreign providers are intentionally per-request-only in the public
+	// catalogue. Hide legacy token rows from the admin display-price editor too.
+	out := make([]DisplayModelPrice, 0, len(models))
+	for i := range models {
+		if models[i].BillingMode == DisplayBillingModeToken && !isDomesticDisplayProvider(models[i].Provider) {
+			continue
+		}
+		out = append(out, models[i])
+	}
+	return out, nil
 }
 
 func (s *DisplayPricingService) UpsertModel(ctx context.Context, price DisplayModelPrice) (*DisplayModelPrice, error) {
@@ -193,6 +219,16 @@ func (s *DisplayPricingService) UpdateModel(ctx context.Context, id int64, price
 	if id <= 0 {
 		return nil, ErrDisplayPriceNotFound
 	}
+	existing, err := s.repo.GetModel(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	// Identity belongs to the discovered catalogue. Price edits must not fail
+	// because a stale client posts an old protocol/platform or accidentally
+	// collide with another identity row.
+	price.Platform = existing.Platform
+	price.ModelName = existing.ModelName
+	price.BillingMode = existing.BillingMode
 	price.ID = id
 	if err := normalizeAndValidateDisplayModelPrice(&price); err != nil {
 		return nil, err
@@ -287,7 +323,7 @@ type DiscoveredDisplayModel struct {
 // BuildCatalog intersects the presentation table with models dynamically discovered from
 // currently active channels. Prices are sourced exclusively from display_model_prices.
 func (s *DisplayPricingService) BuildCatalog(ctx context.Context, groups []PlazaGroup) (*DisplayPricingCatalog, error) {
-	settings, err := s.repo.GetSettings(ctx)
+	settings, err := s.GetSettings(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get display pricing settings: %w", err)
 	}
@@ -326,6 +362,9 @@ func (s *DisplayPricingService) BuildCatalog(ctx context.Context, groups []Plaza
 		if p == nil || !p.Enabled {
 			continue
 		}
+		if p.BillingMode == DisplayBillingModeToken && !isDomesticDisplayProvider(p.Provider) {
+			continue
+		}
 		providerKey := d.Provider
 		providerKey = p.Provider
 		providerCfg, ok := providerByKey[providerKey]
@@ -344,12 +383,12 @@ func (s *DisplayPricingService) BuildCatalog(ctx context.Context, groups []Plaza
 				PerRequestNote: providerCfg.PerRequestNote,
 				ImageNote:      providerCfg.ImageNote,
 				LogoKey:        providerCfg.LogoKey, LogoURL: providerCfg.LogoURL,
-				ConfiguredMultiplier: providerCfg.Multiplier, EffectiveMultiplier: settings.GlobalMultiplier * override,
+				ConfiguredMultiplier: providerCfg.Multiplier, EffectiveMultiplier: override,
 				Models: []DisplayCatalogModel{}, SortOrder: providerCfg.SortOrder,
 			}
 			byProvider[providerKey] = bucket
 		}
-		model := buildDisplayCatalogModel(d, p, settings.GlobalMultiplier, providerCfg)
+		model := buildDisplayCatalogModel(d, p, providerCfg)
 		bucket.Models = append(bucket.Models, model)
 	}
 
@@ -402,8 +441,27 @@ func discoverDisplayModels(groups []PlazaGroup, priceByKey map[string]*DisplayMo
 			if p != nil {
 				provider = p.Provider
 			}
+			if mode == DisplayBillingModeToken && !isDomesticDisplayProvider(provider) {
+				continue
+			}
 			out = append(out, DiscoveredDisplayModel{Platform: m.Platform, ModelName: m.Name, BillingMode: mode, Provider: provider, Configured: configured})
 		}
+	}
+	// The upstream public price page is authoritative for the per-request
+	// catalogue, so configured enabled rows do not depend on token-channel model
+	// discovery. This also makes upstream additions/removals visible immediately.
+	for key, p := range priceByKey {
+		if p == nil || !p.Enabled || p.BillingMode != DisplayBillingModePerRequest {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, DiscoveredDisplayModel{
+			Platform: p.Platform, ModelName: p.ModelName, BillingMode: p.BillingMode,
+			Provider: p.Provider, Configured: true,
+		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Provider != out[j].Provider {
@@ -414,7 +472,7 @@ func discoverDisplayModels(groups []PlazaGroup, priceByKey map[string]*DisplayMo
 	return out
 }
 
-func buildDisplayCatalogModel(d DiscoveredDisplayModel, p *DisplayModelPrice, global float64, provider DisplayPricingProvider) DisplayCatalogModel {
+func buildDisplayCatalogModel(d DiscoveredDisplayModel, p *DisplayModelPrice, provider DisplayPricingProvider) DisplayCatalogModel {
 	currency := provider.Currency
 	model := DisplayCatalogModel{Platform: d.Platform, ModelName: d.ModelName, BillingMode: d.BillingMode, Provider: d.Provider, Currency: currency, Configured: p != nil, Enabled: p != nil && p.Enabled}
 	if p == nil {
@@ -427,22 +485,18 @@ func buildDisplayCatalogModel(d DiscoveredDisplayModel, p *DisplayModelPrice, gl
 	switch p.BillingMode {
 	case DisplayBillingModePerRequest:
 		if p.PerRequestLTE256K != nil {
-			mid := *p.PerRequestLTE256K * 1.5
-			high := *p.PerRequestLTE256K * 2
-			if p.PerRequest256K512KOverride != nil {
-				mid = *p.PerRequest256K512KOverride
+			model.PerRequest = &DisplayPerRequestPrices{
+				LTE256K:      *p.PerRequestLTE256K,
+				From256K512K: *p.PerRequestLTE256K * 1.5,
+				GT512K:       *p.PerRequestLTE256K * 2,
 			}
-			if p.PerRequestGT512KOverride != nil {
-				high = *p.PerRequestGT512KOverride
-			}
-			model.PerRequest = &DisplayPerRequestPrices{LTE256K: *p.PerRequestLTE256K, From256K512K: mid, GT512K: high}
 		}
 	case DisplayBillingModeToken, DisplayBillingModeImage:
-		effective := global
+		effective := DisplayGlobalMultiplier
 		if p.ModelMultiplier != nil {
 			effective = *p.ModelMultiplier
 		} else if provider.Multiplier != nil {
-			effective *= *provider.Multiplier
+			effective = *provider.Multiplier
 		}
 		model.ModelMultiplier = p.ModelMultiplier
 		model.EffectiveMultiplier = displayFloat64Ptr(effective)
@@ -473,6 +527,9 @@ func normalizeAndValidateDisplayModelPrice(p *DisplayModelPrice) error {
 		p.OfficialPriceSource = DisplayOfficialPriceManual
 	}
 	if p.Platform == "" || p.ModelName == "" || p.Provider == "" || !validDisplayBillingMode(p.BillingMode) || !validDisplayCurrency(p.Currency) {
+		return ErrDisplayPriceInvalid
+	}
+	if p.BillingMode == DisplayBillingModeToken && !isDomesticDisplayProvider(p.Provider) {
 		return ErrDisplayPriceInvalid
 	}
 	if !displayProviderKeyPattern.MatchString(p.OfficialPriceSource) || !validDisplayOfficialSourceURL(p.OfficialPriceSourceURL) {
@@ -506,6 +563,10 @@ func normalizeAndValidateDisplayModelPrice(p *DisplayModelPrice) error {
 		}
 		p.OfficialInputPerMillion, p.OfficialOutputPerMillion, p.OfficialCacheWritePerMillion, p.OfficialCacheReadPerMillion = nil, nil, nil, nil
 		p.ModelMultiplier = nil
+		// There is one source of truth for per-request pricing. The two public
+		// higher tiers are always derived as 1.5x and 2x from this first tier.
+		p.PerRequest256K512KOverride = nil
+		p.PerRequestGT512KOverride = nil
 		p.OfficialPriceSource = DisplayOfficialPriceManual
 		p.OfficialPriceSourceURL = ""
 		p.OfficialPriceSyncedAt = nil
@@ -564,9 +625,9 @@ func (s *DisplayPricingService) validateDisplayModelProvider(ctx context.Context
 		if normalizeDisplayProvider(providers[i].Provider) != price.Provider {
 			continue
 		}
-		if strings.ToUpper(strings.TrimSpace(providers[i].Currency)) != price.Currency {
-			return ErrDisplayPriceInvalid
-		}
+		// Provider is the currency authority. Normalizing here avoids a generic
+		// save failure when an older editor posts a stale model currency.
+		price.Currency = strings.ToUpper(strings.TrimSpace(providers[i].Currency))
 		return nil
 	}
 	return ErrDisplayProviderNotFound
