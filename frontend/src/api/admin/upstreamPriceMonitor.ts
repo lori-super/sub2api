@@ -29,6 +29,7 @@ export interface UpstreamPriceMonitorConfig {
   account_ids: number[]
   channel_ids: number[]
   domestic_models: string[]
+  per_request_models: string[]
   passive_sample_max_age_minutes: number
   active_probe_enabled: boolean
   updated_at?: string

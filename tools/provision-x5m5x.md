@@ -2,7 +2,7 @@
 
 `provision-x5m5x.ps1` idempotently creates or updates three isolated real-billing groups:
 
-- `按量分组【成功率百分之99+】`: 33 token-billed models.
+- `按量分组【成功率百分之99+】`: 34 token-billed models.
 - `按次分组【成功率百分之95+】`: 14 models with the upstream's exact three context-tier prices.
 - `生图分组-按次扣费`: one image model with image generation enabled.
 

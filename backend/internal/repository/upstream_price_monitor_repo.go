@@ -31,11 +31,11 @@ func (r *upstreamPriceMonitorRepository) GetConfig(ctx context.Context) (*domain
 	}
 	var cfg domain.UpstreamPriceMonitorConfig
 	err := r.db.QueryRowContext(ctx, `SELECT enabled, mode, interval_minutes, markup,
-		display_multiplier_decimals, account_ids, channel_ids, domestic_models,
+		display_multiplier_decimals, account_ids, channel_ids, domestic_models, per_request_models,
 		passive_sample_max_age_minutes, active_probe_enabled, updated_at
 		FROM upstream_price_monitor_config WHERE id=1`).Scan(
 		&cfg.Enabled, &cfg.Mode, &cfg.IntervalMinutes, &cfg.Markup,
-		&cfg.DisplayMultiplierDecimals, pq.Array(&cfg.AccountIDs), pq.Array(&cfg.ChannelIDs), pq.Array(&cfg.DomesticModels),
+		&cfg.DisplayMultiplierDecimals, pq.Array(&cfg.AccountIDs), pq.Array(&cfg.ChannelIDs), pq.Array(&cfg.DomesticModels), pq.Array(&cfg.PerRequestModels),
 		&cfg.PassiveSampleMaxAgeMinutes, &cfg.ActiveProbeEnabled, &cfg.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -84,17 +84,18 @@ func (r *upstreamPriceMonitorRepository) UpdateConfig(ctx context.Context, cfg *
 		return err
 	}
 	if err := tx.QueryRowContext(ctx, `INSERT INTO upstream_price_monitor_config
-		(id,enabled,mode,interval_minutes,markup,display_multiplier_decimals,account_ids,channel_ids,domestic_models,
+		(id,enabled,mode,interval_minutes,markup,display_multiplier_decimals,account_ids,channel_ids,domestic_models,per_request_models,
 		 passive_sample_max_age_minutes,active_probe_enabled,updated_at)
-		VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+		VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
 		ON CONFLICT (id) DO UPDATE SET enabled=EXCLUDED.enabled,mode=EXCLUDED.mode,
 		interval_minutes=EXCLUDED.interval_minutes,markup=EXCLUDED.markup,
 		display_multiplier_decimals=EXCLUDED.display_multiplier_decimals,account_ids=EXCLUDED.account_ids,
 		channel_ids=EXCLUDED.channel_ids,domestic_models=EXCLUDED.domestic_models,
+		per_request_models=EXCLUDED.per_request_models,
 		passive_sample_max_age_minutes=EXCLUDED.passive_sample_max_age_minutes,
 		active_probe_enabled=EXCLUDED.active_probe_enabled,updated_at=NOW()
 		RETURNING updated_at`, cfg.Enabled, cfg.Mode, cfg.IntervalMinutes, cfg.Markup,
-		cfg.DisplayMultiplierDecimals, pq.Array(cfg.AccountIDs), pq.Array(cfg.ChannelIDs), pq.Array(cfg.DomesticModels),
+		cfg.DisplayMultiplierDecimals, pq.Array(cfg.AccountIDs), pq.Array(cfg.ChannelIDs), pq.Array(cfg.DomesticModels), pq.Array(cfg.PerRequestModels),
 		cfg.PassiveSampleMaxAgeMinutes, cfg.ActiveProbeEnabled).Scan(&cfg.UpdatedAt); err != nil {
 		return err
 	}

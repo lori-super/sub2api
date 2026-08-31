@@ -27,6 +27,7 @@ describe('upstream price monitor API', () => {
       account_ids: [7],
       channel_ids: [3],
       domestic_models: ['deepseek-v4-flash-0731'],
+      per_request_models: ['deepseek-v4-flash-0731'],
       passive_sample_max_age_minutes: 60,
       active_probe_enabled: true,
     }

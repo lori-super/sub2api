@@ -328,17 +328,29 @@
                 </label>
               </div>
 
-              <label class="form-field block">
-                <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.models') }}</span>
-                <textarea
-                  v-model="modelsText"
-                  rows="9"
-                  readonly
-                  class="input mt-1.5 min-h-[150px] resize-y bg-gray-50 font-mono text-sm dark:bg-dark-900/30"
-                  data-testid="config-models"
-                ></textarea>
-                <span class="config-hint mt-1">{{ t('admin.upstreamPriceMonitor.config.modelsHint') }}</span>
-              </label>
+              <div class="grid gap-5 lg:grid-cols-2">
+                <label class="form-field block">
+                  <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.models') }}</span>
+                  <textarea
+                    v-model="modelsText"
+                    rows="9"
+                    readonly
+                    class="input mt-1.5 min-h-[150px] resize-y bg-gray-50 font-mono text-sm dark:bg-dark-900/30"
+                    data-testid="config-models"
+                  ></textarea>
+                  <span class="config-hint mt-1">{{ t('admin.upstreamPriceMonitor.config.modelsHint') }}</span>
+                </label>
+                <label class="form-field block">
+                  <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.perRequestModels') }}</span>
+                  <textarea
+                    v-model="perRequestModelsText"
+                    rows="9"
+                    class="input mt-1.5 min-h-[150px] resize-y font-mono text-sm"
+                    data-testid="config-per-request-models"
+                  ></textarea>
+                  <span class="config-hint mt-1">{{ t('admin.upstreamPriceMonitor.config.perRequestModelsHint') }}</span>
+                </label>
+              </div>
 
               <div class="overflow-hidden rounded-2xl border border-gray-200 dark:border-dark-700" data-testid="model-catalog">
                 <div class="flex flex-col gap-3 border-b border-gray-100 p-4 dark:border-dark-700 sm:flex-row sm:items-end sm:justify-between">
@@ -541,6 +553,7 @@ const defaultConfig = (): UpstreamPriceMonitorConfig => ({
   account_ids: [],
   channel_ids: [],
   domestic_models: [],
+  per_request_models: [],
   passive_sample_max_age_minutes: 60,
   active_probe_enabled: false,
 })
@@ -568,6 +581,7 @@ const channelOptions = ref<Channel[]>([])
 const configDraft = reactive<UpstreamPriceMonitorConfig>(defaultConfig())
 const configBaseline = ref('')
 const modelsText = ref('')
+const perRequestModelsText = ref('')
 const modelCatalog = ref<UpstreamPriceModelCatalogEntry[]>([])
 const modelCatalogStatus = ref<UpstreamPriceModelStatus | ''>('')
 const modelCatalogSearch = ref('')
@@ -591,12 +605,17 @@ function normalizedModels(): string[] {
   return Array.from(new Set(modelsText.value.split(/\r?\n|,/).map(value => value.trim()).filter(Boolean)))
 }
 
+function normalizedPerRequestModels(): string[] {
+  return Array.from(new Set(perRequestModelsText.value.split(/\r?\n|,/).map(value => value.trim()).filter(Boolean)))
+}
+
 function configPayload(): UpstreamPriceMonitorConfig {
   return {
     ...configDraft,
     account_ids: [...configDraft.account_ids].map(Number).filter(Number.isFinite).sort((a, b) => a - b),
     channel_ids: [...configDraft.channel_ids].map(Number).filter(Number.isFinite).sort((a, b) => a - b),
     domestic_models: normalizedModels().sort((a, b) => a.localeCompare(b)),
+    per_request_models: normalizedPerRequestModels().sort((a, b) => a.localeCompare(b)),
   }
 }
 
@@ -606,6 +625,7 @@ function serializeConfig(value: UpstreamPriceMonitorConfig): string {
     account_ids: [...value.account_ids].sort((a, b) => a - b),
     channel_ids: [...value.channel_ids].sort((a, b) => a - b),
     domestic_models: [...value.domestic_models].sort((a, b) => a.localeCompare(b)),
+    per_request_models: [...value.per_request_models].sort((a, b) => a.localeCompare(b)),
   })
 }
 
@@ -642,8 +662,10 @@ function assignConfig(config: UpstreamPriceMonitorConfig): void {
     account_ids: [...(normalized.account_ids || [])],
     channel_ids: [...(normalized.channel_ids || [])],
 		domestic_models: [...(normalized.domestic_models || [])],
+		per_request_models: [...(normalized.per_request_models || [])],
   })
   modelsText.value = normalized.domestic_models.join('\n')
+  perRequestModelsText.value = normalized.per_request_models.join('\n')
   configBaseline.value = serializeConfig(configPayload())
 }
 

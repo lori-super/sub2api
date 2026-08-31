@@ -475,6 +475,11 @@ func normalizeAndValidateUpstreamPriceMonitorConfig(cfg *domain.UpstreamPriceMon
 		return err
 	}
 	cfg.DomesticModels = models
+	requestModels, err := normalizeDomesticModelAllowlist(cfg.PerRequestModels)
+	if err != nil {
+		return err
+	}
+	cfg.PerRequestModels = requestModels
 	return nil
 }
 
@@ -695,6 +700,7 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 		runErrors = append(runErrors, "monitor configuration changed while refreshing the upstream model catalogue")
 	} else {
 		cfg.DomesticModels = refreshedConfig.DomesticModels
+		cfg.PerRequestModels = refreshedConfig.PerRequestModels
 		cfg.UpdatedAt = refreshedConfig.UpdatedAt
 	}
 	if modelCatalogRevision <= 0 {
@@ -795,8 +801,8 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 		if pageErr != nil {
 			runErrors = append(runErrors, "per-request pricing page: "+pageErr.Error())
 		} else {
-			allowedModels := make(map[string]struct{}, len(cfg.DomesticModels))
-			for _, model := range cfg.DomesticModels {
+			allowedModels := make(map[string]struct{}, len(cfg.PerRequestModels))
+			for _, model := range cfg.PerRequestModels {
 				allowedModels[strings.ToLower(model)] = struct{}{}
 			}
 			for model, price := range prices {
@@ -855,7 +861,7 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 		accountIdentityHashes[key] = UpstreamPriceAccountIdentityHash(account)
 	}
 	run.Summary = map[string]any{
-		"accounts": len(cfg.AccountIDs), "models": len(cfg.DomesticModels), "observe_only": run.DryRun,
+		"accounts": len(cfg.AccountIDs), "models": len(cfg.DomesticModels), "per_request_models": len(cfg.PerRequestModels), "observe_only": run.DryRun,
 		"account_ids":                 append([]int64(nil), cfg.AccountIDs...),
 		"channel_ids":                 append([]int64(nil), cfg.ChannelIDs...),
 		"display_multiplier_decimals": cfg.DisplayMultiplierDecimals,
@@ -900,7 +906,7 @@ func sameUpstreamPriceNonModelConfig(a, b *domain.UpstreamPriceMonitorConfig) bo
 		a.DisplayMultiplierDecimals != b.DisplayMultiplierDecimals ||
 		a.PassiveSampleMaxAgeMinutes != b.PassiveSampleMaxAgeMinutes ||
 		a.ActiveProbeEnabled != b.ActiveProbeEnabled || len(a.AccountIDs) != len(b.AccountIDs) ||
-		len(a.ChannelIDs) != len(b.ChannelIDs) {
+		len(a.ChannelIDs) != len(b.ChannelIDs) || len(a.PerRequestModels) != len(b.PerRequestModels) {
 		return false
 	}
 	for i := range a.AccountIDs {
@@ -910,6 +916,11 @@ func sameUpstreamPriceNonModelConfig(a, b *domain.UpstreamPriceMonitorConfig) bo
 	}
 	for i := range a.ChannelIDs {
 		if a.ChannelIDs[i] != b.ChannelIDs[i] {
+			return false
+		}
+	}
+	for i := range a.PerRequestModels {
+		if !strings.EqualFold(a.PerRequestModels[i], b.PerRequestModels[i]) {
 			return false
 		}
 	}

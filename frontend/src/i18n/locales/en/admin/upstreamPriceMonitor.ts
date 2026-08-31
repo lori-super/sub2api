@@ -48,6 +48,7 @@ export default {
       accountsHint: 'Hold Ctrl / Command to select multiple accounts. Only real requests routed through these accounts are used.',
       channels: 'Target channels', channelsHint: 'Auto-apply writes trusted suggestions to these channels and refreshes user-facing display multipliers; observe mode only creates snapshots.',
       models: 'Managed domestic models', modelsHint: 'Read-only paid-probe scope. Manage it in the upstream model catalogue below; removing a model never deletes pricing or history.',
+      perRequestModels: 'Per-request price-page models', perRequestModelsHint: 'These models use the upstream public three-tier price page, do not need to exist on the token account, and never trigger paid probes.',
       catalogTitle: 'Upstream supported-model catalogue', catalogHint: 'New models are discovery-only and can be managed after every account sees them. Missing models pause only after 3 complete scans and 24 hours; pricing and history remain.',
       catalogSearch: 'Search models', catalogAll: 'All statuses', catalogStatus: 'Catalogue status', catalogCoverage: 'Account coverage',
       domesticOnly: 'Show domestic candidates by default (clear to inspect every upstream model)',
