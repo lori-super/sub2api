@@ -47,22 +47,6 @@ var (
 	ErrUpstreamPriceMonitorInvalidConfig = infraerrors.BadRequest(
 		"UPSTREAM_PRICE_MONITOR_INVALID_CONFIG", "invalid upstream price monitor configuration",
 	)
-	ErrUpstreamPriceActiveProbeRolloutLocked = infraerrors.BadRequest(
-		"UPSTREAM_PRICE_ACTIVE_PROBE_ROLLOUT_LOCKED",
-		"active price probing will be available after safety testing is complete",
-	)
-	ErrUpstreamPriceAutoApplyRolloutLocked = infraerrors.BadRequest(
-		"UPSTREAM_PRICE_AUTO_APPLY_ROLLOUT_LOCKED",
-		"automatic price application will be available after safety testing is complete",
-	)
-	ErrUpstreamPriceApplyRolloutLocked = infraerrors.BadRequest(
-		"UPSTREAM_PRICE_APPLY_ROLLOUT_LOCKED",
-		"price snapshot application is disabled during the observation-only rollout",
-	)
-	ErrUpstreamPriceRollbackRolloutLocked = infraerrors.BadRequest(
-		"UPSTREAM_PRICE_ROLLBACK_ROLLOUT_LOCKED",
-		"price snapshot rollback is disabled during the observation-only rollout",
-	)
 	ErrUpstreamPriceMonitorRunConflict = infraerrors.Conflict(
 		"UPSTREAM_PRICE_MONITOR_RUN_CONFLICT", "an upstream price monitor run is already active",
 	)
@@ -152,6 +136,7 @@ type UpstreamPriceMonitorService struct {
 	now               func() time.Time
 	runMu             sync.Mutex
 	cacheInvalidator  interface{ InvalidatePricingCache() }
+	notifier          UpstreamPriceMonitorNotifier
 }
 
 func NewUpstreamPriceMonitorService(
@@ -186,6 +171,12 @@ func (s *UpstreamPriceMonitorService) SetPricingCacheInvalidator(invalidator int
 	}
 }
 
+func (s *UpstreamPriceMonitorService) SetNotifier(notifier UpstreamPriceMonitorNotifier) {
+	if s != nil {
+		s.notifier = notifier
+	}
+}
+
 func (s *UpstreamPriceMonitorService) GetConfig(ctx context.Context) (*domain.UpstreamPriceMonitorConfig, error) {
 	if s == nil || s.repo == nil {
 		cfg := domain.DefaultUpstreamPriceMonitorConfig()
@@ -198,15 +189,8 @@ func (s *UpstreamPriceMonitorService) UpdateConfig(ctx context.Context, cfg *dom
 	if s == nil || s.repo == nil {
 		return ErrUpstreamPriceMonitorUnavailable
 	}
-	// Conservative first-release guard: keep the implementation available for
-	// controlled tests, but make the public admin API unable to enable billable
-	// probes or automatic price mutations until the rollout is explicitly
-	// unlocked in a later release.
-	if cfg != nil && cfg.ActiveProbeEnabled {
-		return ErrUpstreamPriceActiveProbeRolloutLocked
-	}
-	if cfg != nil && cfg.Mode == domain.UpstreamPriceMonitorModeAutoApply {
-		return ErrUpstreamPriceAutoApplyRolloutLocked
+	if cfg != nil && cfg.ActiveProbeEnabled && s.prober == nil {
+		return ErrUpstreamPriceMonitorInvalidConfig
 	}
 	if cfg != nil {
 		catalog, err := s.repo.ListModelCatalog(ctx)
@@ -358,18 +342,108 @@ func (s *UpstreamPriceMonitorService) ListRunEvidence(ctx context.Context, runID
 	return out, nil
 }
 
-func (s *UpstreamPriceMonitorService) ApplyRun(_ context.Context, _ int64, _ string) (*domain.UpstreamPriceMonitorRun, error) {
-	if s == nil || s.repo == nil {
-		return nil, ErrUpstreamPriceMonitorUnavailable
+func (s *UpstreamPriceMonitorService) ApplyRun(ctx context.Context, runID int64, snapshotHash string) (*domain.UpstreamPriceMonitorRun, error) {
+	if s == nil || s.repo == nil || runID <= 0 || strings.TrimSpace(snapshotHash) == "" {
+		return nil, ErrUpstreamPriceRunNotApplicable
 	}
-	return nil, ErrUpstreamPriceApplyRolloutLocked
+	run, err := s.repo.GetRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	scope, ok := ReadUpstreamPriceRunApplyScope(run)
+	if !ok {
+		return nil, ErrUpstreamPriceRunNotApplicable
+	}
+	currentAccounts, err := s.loadDistinctUpstreamPriceMonitorAccounts(ctx, scope.AccountIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, accountID := range scope.AccountIDs {
+		if UpstreamPriceCredentialLedgerHash(currentAccounts[accountID]) != scope.AccountLedgerHashes[accountID] ||
+			UpstreamPriceAccountIdentityHash(currentAccounts[accountID]) != scope.AccountIdentityHashes[accountID] {
+			return nil, ErrUpstreamPriceSnapshotMismatch
+		}
+	}
+	if err := s.repo.ApplyRun(ctx, runID, strings.TrimSpace(snapshotHash), scope.ChannelIDs, scope.AccountIDs,
+		scope.DisplayMultiplierDecimals, scope.MaxAgeMinutes, scope.ConfigUpdatedAt, scope.ModelCatalogRevision); err != nil {
+		return nil, err
+	}
+	applied, err := s.repo.GetRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	appliedModels, _ := upstreamPriceSummaryInt(applied.Summary["applied_models"])
+	if appliedModels > 0 && s.cacheInvalidator != nil {
+		s.cacheInvalidator.InvalidatePricingCache()
+	}
+	s.notifyRun(ctx, applied, UpstreamPriceMonitorNotificationApplied, "")
+	return applied, nil
 }
 
-func (s *UpstreamPriceMonitorService) RollbackRun(_ context.Context, _ int64, _ string) (*domain.UpstreamPriceMonitorRun, error) {
-	if s == nil || s.repo == nil {
-		return nil, ErrUpstreamPriceMonitorUnavailable
+func (s *UpstreamPriceMonitorService) RollbackRun(ctx context.Context, runID int64, snapshotHash string) (*domain.UpstreamPriceMonitorRun, error) {
+	if s == nil || s.repo == nil || runID <= 0 || strings.TrimSpace(snapshotHash) == "" {
+		return nil, ErrUpstreamPriceRunNotApplicable
 	}
-	return nil, ErrUpstreamPriceRollbackRolloutLocked
+	if err := s.repo.RollbackRun(ctx, runID, strings.TrimSpace(snapshotHash)); err != nil {
+		return nil, err
+	}
+	if s.cacheInvalidator != nil {
+		s.cacheInvalidator.InvalidatePricingCache()
+	}
+	rolledBack, err := s.repo.GetRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	s.notifyRun(ctx, rolledBack, UpstreamPriceMonitorNotificationRolledBack, "")
+	return rolledBack, nil
+}
+
+func (s *UpstreamPriceMonitorService) notifyRun(
+	ctx context.Context,
+	run *domain.UpstreamPriceMonitorRun,
+	action UpstreamPriceMonitorNotificationAction,
+	errorMessage string,
+) {
+	if s == nil || s.notifier == nil || run == nil {
+		return
+	}
+	modelsByName := make(map[string]UpstreamPriceMonitorNotificationModel)
+	if evidence, err := s.ListRunEvidence(context.WithoutCancel(ctx), run.ID); err == nil {
+		for _, item := range evidence {
+			if upstreamPriceNotificationVectorEmpty(item.Prices) && upstreamPriceNotificationVectorEmpty(item.SuggestedPrices) {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(item.ModelName))
+			if key == "" {
+				continue
+			}
+			modelsByName[key] = UpstreamPriceMonitorNotificationModel{
+				Model:                      item.ModelName,
+				OldPrices:                  item.CurrentPrices,
+				MeasuredPrices:             item.Prices,
+				SuggestedPrices:            item.SuggestedPrices,
+				DisplayMultiplierCurrent:   item.DisplayMultiplierCurrent,
+				DisplayMultiplierSuggested: item.DisplayMultiplierSuggested,
+			}
+		}
+	}
+	models := make([]UpstreamPriceMonitorNotificationModel, 0, len(modelsByName))
+	for _, model := range modelsByName {
+		models = append(models, model)
+	}
+	occurredAt := s.now().UTC()
+	if run.FinishedAt != nil {
+		occurredAt = run.FinishedAt.UTC()
+	}
+	s.notifier.Notify(ctx, UpstreamPriceMonitorNotificationPayload{
+		RunID: run.ID, Action: action, Models: models, OccurredAt: occurredAt, Error: errorMessage,
+	})
+}
+
+func upstreamPriceNotificationVectorEmpty(value domain.UpstreamPriceVector) bool {
+	return value.InputPerMillion == nil && value.OutputPerMillion == nil &&
+		value.CacheWritePerMillion == nil && value.CacheReadPerMillion == nil &&
+		value.PerRequestLTE256K == nil && value.PerRequest256K512K == nil && value.PerRequestGT512K == nil
 }
 
 func normalizeAndValidateUpstreamPriceMonitorConfig(cfg *domain.UpstreamPriceMonitorConfig) error {
@@ -392,7 +466,8 @@ func normalizeAndValidateUpstreamPriceMonitorConfig(cfg *domain.UpstreamPriceMon
 	}
 	cfg.AccountIDs = uniquePositiveInt64s(cfg.AccountIDs)
 	cfg.ChannelIDs = uniquePositiveInt64s(cfg.ChannelIDs)
-	if cfg.Mode == domain.UpstreamPriceMonitorModeAutoApply && (len(cfg.AccountIDs) == 0 || len(cfg.ChannelIDs) == 0) {
+	if (cfg.Mode == domain.UpstreamPriceMonitorModeAutoApply || cfg.ActiveProbeEnabled) &&
+		(len(cfg.AccountIDs) == 0 || len(cfg.ChannelIDs) == 0) {
 		return ErrUpstreamPriceMonitorInvalidConfig
 	}
 	models, err := normalizeDomesticModelAllowlist(cfg.DomesticModels)
@@ -567,14 +642,11 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 	if err != nil {
 		return nil, fmt.Errorf("get upstream price monitor config: %w", err)
 	}
-	// The first release is observation-only even if an older database row or a
-	// direct SQL edit still contains pre-rollout values. Enforce the lock in the
-	// runtime path so it cannot be bypassed through persisted configuration.
-	cfg.Mode = domain.UpstreamPriceMonitorModeObserve
-	cfg.ActiveProbeEnabled = false
-	options.DryRun = true
 	if options.Trigger == "" {
 		options.Trigger = domain.UpstreamPriceMonitorRunTriggerManual
+	}
+	if options.Trigger == domain.UpstreamPriceMonitorRunTriggerManual {
+		options.DryRun = true
 	}
 	if options.Trigger == domain.UpstreamPriceMonitorRunTriggerScheduled && !cfg.Enabled {
 		return nil, nil
@@ -617,17 +689,13 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 		runErrors = append(runErrors, "refresh upstream model catalogue: "+discoveryErr.Error())
 	} else if refreshedConfig, refreshErr := s.repo.GetConfig(ctx); refreshErr != nil {
 		runErrors = append(runErrors, "reload model probe scope: "+refreshErr.Error())
+	} else if validateErr := normalizeAndValidateUpstreamPriceMonitorConfig(refreshedConfig); validateErr != nil {
+		runErrors = append(runErrors, "validate discovered model probe scope: "+validateErr.Error())
+	} else if !sameUpstreamPriceNonModelConfig(cfg, refreshedConfig) {
+		runErrors = append(runErrors, "monitor configuration changed while refreshing the upstream model catalogue")
 	} else {
-		refreshedConfig.Mode = domain.UpstreamPriceMonitorModeObserve
-		refreshedConfig.ActiveProbeEnabled = false
-		if validateErr := normalizeAndValidateUpstreamPriceMonitorConfig(refreshedConfig); validateErr != nil {
-			runErrors = append(runErrors, "validate discovered model probe scope: "+validateErr.Error())
-		} else if !sameUpstreamPriceNonModelConfig(cfg, refreshedConfig) {
-			runErrors = append(runErrors, "monitor configuration changed while refreshing the upstream model catalogue")
-		} else {
-			cfg.DomesticModels = refreshedConfig.DomesticModels
-			cfg.UpdatedAt = refreshedConfig.UpdatedAt
-		}
+		cfg.DomesticModels = refreshedConfig.DomesticModels
+		cfg.UpdatedAt = refreshedConfig.UpdatedAt
 	}
 	if modelCatalogRevision <= 0 {
 		runErrors = append(runErrors, "model catalogue has no scan revision")
@@ -809,11 +877,18 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 			cancel()
 			run.Status = domain.UpstreamPriceMonitorRunStatusPartial
 			run.Error = message
+			s.notifyRun(ctx, run, UpstreamPriceMonitorNotificationApplyFailed, message)
 			return run, applyErr
 		}
 		return applied, nil
 	}
+	if run.Status == domain.UpstreamPriceMonitorRunStatusPartial {
+		s.notifyRun(ctx, run, UpstreamPriceMonitorNotificationPartial, run.Error)
+	} else if run.Status == domain.UpstreamPriceMonitorRunStatusCompleted && options.Trigger == domain.UpstreamPriceMonitorRunTriggerManual {
+		s.notifyRun(ctx, run, UpstreamPriceMonitorNotificationSuggested, "")
+	}
 	if run.Status == domain.UpstreamPriceMonitorRunStatusFailed {
+		s.notifyRun(ctx, run, UpstreamPriceMonitorNotificationFailed, run.Error)
 		return run, errors.New(run.Error)
 	}
 	return run, nil

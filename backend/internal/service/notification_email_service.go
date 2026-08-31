@@ -33,6 +33,7 @@ const (
 	NotificationEmailEventCyberPolicyNotice           = "content_moderation.cyber_policy_notice"
 	NotificationEmailEventOpsAlert                    = "ops.alert"
 	NotificationEmailEventOpsScheduledReport          = "ops.scheduled_report"
+	NotificationEmailEventUpstreamPriceMonitor        = "upstream_price_monitor.action"
 
 	notificationEmailTemplateKeyPrefix    = "notification_email_template:"
 	notificationEmailPreferenceKeyPrefix  = "notification_email_preference:"
@@ -943,6 +944,7 @@ func notificationEmailSampleVariables(locale string) map[string]string {
 			"report_html":         "<h2>日报</h2><p>请求量：2,374</p>",
 		}
 		addNotificationEmailOpsSummarySampleVariables(variables)
+		addNotificationEmailUpstreamPriceMonitorSampleVariables(variables, true)
 		return variables
 	}
 	variables := map[string]string{
@@ -991,7 +993,27 @@ func notificationEmailSampleVariables(locale string) map[string]string {
 		"report_html":         "<h2>Daily summary</h2><p>Requests: 2,374</p>",
 	}
 	addNotificationEmailOpsSummarySampleVariables(variables)
+	addNotificationEmailUpstreamPriceMonitorSampleVariables(variables, false)
 	return variables
+}
+
+func addNotificationEmailUpstreamPriceMonitorSampleVariables(variables map[string]string, zh bool) {
+	variables["monitor_action"] = "Pricing suggested"
+	variables["monitor_run_id"] = "42"
+	variables["monitor_models"] = "MiniMax-M3"
+	variables["monitor_old_prices"] = "MiniMax-M3: input $0.210000/1M; output $0.840000/1M"
+	variables["monitor_measured_prices"] = "MiniMax-M3: input $0.210000/1M; output $0.840000/1M"
+	variables["monitor_suggested_prices"] = "MiniMax-M3: input $0.252000/1M; output $1.008000/1M"
+	variables["monitor_display_multiplier"] = "MiniMax-M3: 0.120 -> 0.120"
+	variables["monitor_occurred_at"] = "2026-08-31T01:02:03Z"
+	variables["monitor_error"] = "-"
+	if zh {
+		variables["monitor_action"] = "建议调价"
+		variables["monitor_old_prices"] = "MiniMax-M3: 输入 $0.210000/1M; 输出 $0.840000/1M"
+		variables["monitor_measured_prices"] = "MiniMax-M3: 输入 $0.210000/1M; 输出 $0.840000/1M"
+		variables["monitor_suggested_prices"] = "MiniMax-M3: 输入 $0.252000/1M; 输出 $1.008000/1M"
+		variables["monitor_display_multiplier"] = "MiniMax-M3: 0.120 → 0.120"
+	}
 }
 
 func addNotificationEmailOpsSummarySampleVariables(variables map[string]string) {
@@ -1034,6 +1056,7 @@ var notificationEmailEventOrder = []string{
 	NotificationEmailEventCyberPolicyNotice,
 	NotificationEmailEventOpsAlert,
 	NotificationEmailEventOpsScheduledReport,
+	NotificationEmailEventUpstreamPriceMonitor,
 }
 
 var notificationEmailEventDefinitions = map[string]NotificationEmailEventInfo{
@@ -1151,6 +1174,17 @@ var notificationEmailEventDefinitions = map[string]NotificationEmailEventInfo{
 			),
 			append(append([]string{}, notificationEmailOpsSummaryPlaceholders...), "report_detail_display", "report_html")...,
 		),
+	},
+	NotificationEmailEventUpstreamPriceMonitor: {
+		Event:       NotificationEmailEventUpstreamPriceMonitor,
+		Label:       "Upstream price monitor",
+		Description: "Sent to configured operations recipients when upstream price monitoring suggests, applies, fails, or rolls back a price change.",
+		Category:    "ops",
+		Optional:    false,
+		Placeholders: append(append([]string{}, notificationEmailCommonPlaceholders...),
+			"monitor_action", "monitor_run_id", "monitor_models", "monitor_old_prices",
+			"monitor_measured_prices", "monitor_suggested_prices", "monitor_display_multiplier",
+			"monitor_occurred_at", "monitor_error"),
 	},
 }
 
@@ -1434,6 +1468,34 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 		notificationEmailLocaleChinese: {
 			Subject: "[运维报表] {{report_name}}",
 			HTML:    notificationEmailOpsScheduledReportTemplate(notificationEmailLocaleChinese),
+		},
+	},
+	NotificationEmailEventUpstreamPriceMonitor: {
+		notificationEmailDefaultLocale: {
+			Subject: "[{{site_name}}] Upstream pricing {{monitor_action}} - run #{{monitor_run_id}}",
+			HTML: notificationEmailCard("#2563eb", "Upstream price monitor", `
+<p><strong>Action</strong>: {{monitor_action}}</p>
+<p><strong>Run ID</strong>: {{monitor_run_id}}</p>
+<p><strong>Time</strong>: {{monitor_occurred_at}}</p>
+<p><strong>Models</strong>:</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_models}}</pre>
+<p><strong>Old prices</strong>:</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_old_prices}}</pre>
+<p><strong>Measured prices</strong>:</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_measured_prices}}</pre>
+<p><strong>Suggested prices</strong>:</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_suggested_prices}}</pre>
+<p><strong>Display multiplier</strong>:</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_display_multiplier}}</pre>
+<p><strong>Error</strong>: {{monitor_error}}</p>`),
+		},
+		notificationEmailLocaleChinese: {
+			Subject: "[{{site_name}}] 上游价格{{monitor_action}} - 运行 #{{monitor_run_id}}",
+			HTML: notificationEmailCard("#2563eb", "上游价格监控通知", `
+<p><strong>动作</strong>：{{monitor_action}}</p>
+<p><strong>运行 ID</strong>：{{monitor_run_id}}</p>
+<p><strong>时间</strong>：{{monitor_occurred_at}}</p>
+<p><strong>模型</strong>：</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_models}}</pre>
+<p><strong>旧价</strong>：</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_old_prices}}</pre>
+<p><strong>实测价</strong>：</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_measured_prices}}</pre>
+<p><strong>建议价</strong>：</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_suggested_prices}}</pre>
+<p><strong>展示倍率</strong>：</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_display_multiplier}}</pre>
+<p><strong>错误</strong>：{{monitor_error}}</p>`),
 		},
 	},
 }

@@ -1,7 +1,7 @@
 export default {
   upstreamPriceMonitor: {
     title: '上游价格监控',
-    description: '首发仅复用自然用户请求核对上游成本；付费主动探测和自动应用需安全测试完成后开放。',
+    description: '核对真实上游成本，可主动补探缺失价格，并将可信快照自动应用到渠道与用户定价展示。',
     refresh: '刷新状态',
     tabs: {
       overview: '监控概览',
@@ -42,7 +42,6 @@ export default {
       modeHintAuto: '可信价格变化可自动应用；异常或不可观测字段仍只告警。',
       runNow: '立即探测（不改价）',
       running: '正在探测…',
-      observeOnlyLock: '观察阶段不可改价，应用与回滚暂不可用。',
       evidenceTitle: '模型价格证据',
       evidenceHint: '官方展示基础价始终只读；建议价已包含配置的利润上浮。',
       search: '搜索模型',
@@ -74,7 +73,7 @@ export default {
       price_page: '页面声明',
     },
     config: {
-      title: '探测规则（观察阶段）',
+      title: '探测与自动改价规则',
       hint: '生产密钥沿用所选账号的现有凭据，不会返回到浏览器。',
       exclusiveWarning: '所选生产 Key 必须只由本站使用。检测到站外流量或本地/上游账本无法闭合时，自动应用会停止，只保留告警。',
       enabled: '启用持续监控',
@@ -86,12 +85,11 @@ export default {
       decimals: '展示倍率小数位',
       sampleAge: '自然样本最长有效期（分钟）',
       activeProbe: '允许主动探测补洞',
-      activeProbeHint: '首发阶段已强制关闭付费主动探测，安全测试完成后再开放。',
-      rolloutLocked: '安全测试完成后开放',
+      activeProbeHint: '开启后会对自然流量无法求解的模型发起真实付费请求；周期至少 15 分钟。',
       accounts: '纳管生产账号',
       accountsHint: '按住 Ctrl / Command 可多选。只使用这些账号真实走过的用户请求。',
       channels: '目标渠道',
-      channelsHint: '仅配置未来的目标渠道；观察阶段不会写入渠道价格或展示倍率。',
+      channelsHint: '自动应用模式会将可信建议价写入这些渠道，并同步用户定价页的展示倍率；观察模式只生成快照。',
       models: '纳管国模',
       modelsHint: '当前付费探价范围（只读），请在下方模型目录中管理。移出探测不会删除渠道价或历史。',
       catalogTitle: '上游支持模型目录',
@@ -119,7 +117,6 @@ export default {
     history: {
       title: '运行记录',
       hint: '手动探测始终是 dry-run，只记录快照与证据，不会修改价格。',
-      observeOnlyLock: '观察阶段不可改价，应用与回滚暂不可用。',
       allStatuses: '全部状态',
       empty: '还没有运行记录。',
       startedAt: '开始时间',
@@ -144,6 +141,10 @@ export default {
       optionsFailed: '加载账号或渠道选项失败',
       modelUpdateFailed: '更新模型探测范围失败',
       modelDiscoveryFailed: '扫描上游模型失败',
+      applySuccess: '价格快照已应用，渠道价与用户展示价已刷新',
+      applyFailed: '应用价格快照失败',
+      rollbackSuccess: '价格快照已回滚',
+      rollbackFailed: '回滚价格快照失败',
     },
   },
 }
