@@ -55,3 +55,20 @@ func TestUpstreamPriceMonitorPerRequestScopeUsesForwardMigration(t *testing.T) {
 	require.Contains(t, sql, "'auto-model'")
 	require.Contains(t, sql, "'gpt-5.6'")
 }
+
+func TestUpstreamPriceMonitorActiveOnlyMigrationLocksDailySafetyDefaults(t *testing.T) {
+	raw, err := os.ReadFile("242_upstream_price_monitor_active_only.sql")
+	require.NoError(t, err)
+	sql := strings.ToLower(string(raw))
+	require.Contains(t, sql, "active_only boolean not null default true")
+	require.Contains(t, sql, "active_probe_max_requests_per_model integer not null default 7")
+	require.Contains(t, sql, "active_probe_max_models_per_run integer not null default 19")
+	require.Contains(t, sql, "active_probe_run_budget_usd numeric(20, 10) not null default 0.1500000000")
+	require.Contains(t, sql, "active_probe_daily_budget_usd numeric(20, 10) not null default 0.2000000000")
+	require.Contains(t, sql, "active_probe_run_budget_usd <= 0.1500000000")
+	require.Contains(t, sql, "active_probe_daily_budget_usd <= 0.2000000000")
+	require.Contains(t, sql, "interval_minutes set default 1440")
+	require.Contains(t, sql, "mode set default 'auto_apply'")
+	require.Contains(t, sql, "qwen3.8-flash")
+	require.Contains(t, sql, "dimension_statuses jsonb")
+}

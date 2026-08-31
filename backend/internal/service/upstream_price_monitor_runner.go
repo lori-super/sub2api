@@ -19,11 +19,21 @@ type UpstreamPriceMonitorRunner struct {
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	once    sync.Once
+
+	perRequestMu      sync.Mutex
+	perRequestNextRun time.Time
+	now               func() time.Time
 }
+
+var (
+	upstreamPerRequestPriceSyncInterval  = 24 * time.Hour
+	upstreamPerRequestPriceRetryInterval = time.Hour
+	upstreamPerRequestPriceSyncTimeout   = time.Minute
+)
 
 func NewUpstreamPriceMonitorRunner(monitor *UpstreamPriceMonitorService) *UpstreamPriceMonitorRunner {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &UpstreamPriceMonitorRunner{monitor: monitor, ctx: ctx, cancel: cancel}
+	return &UpstreamPriceMonitorRunner{monitor: monitor, ctx: ctx, cancel: cancel, now: time.Now}
 }
 
 func (r *UpstreamPriceMonitorRunner) Start() {
@@ -60,7 +70,14 @@ func (r *UpstreamPriceMonitorRunner) loop() {
 }
 
 func (r *UpstreamPriceMonitorRunner) runIfDue() {
-	ctx, cancel := context.WithTimeout(r.ctx, 14*time.Minute)
+	// Public per-request pricing has its own daily clock and does not inherit
+	// token monitoring's enabled/mode state.
+	r.runPerRequestIfDue()
+
+	// Nineteen models can require up to seven settled ledger samples each. The
+	// service has a tighter 45-minute deadline; this outer allowance leaves time
+	// to persist the terminal run state.
+	ctx, cancel := context.WithTimeout(r.ctx, 50*time.Minute)
 	defer cancel()
 	cfg, err := r.monitor.GetConfig(ctx)
 	if err != nil || !cfg.Enabled {
@@ -81,4 +98,42 @@ func (r *UpstreamPriceMonitorRunner) runIfDue() {
 	if err != nil && !errors.Is(err, ErrUpstreamPriceMonitorRunConflict) {
 		slog.Warn("upstream_price_monitor_run_failed", "error", err)
 	}
+}
+
+func (r *UpstreamPriceMonitorRunner) runPerRequestIfDue() {
+	if r == nil || r.monitor == nil {
+		return
+	}
+	now := time.Now
+	if r.now != nil {
+		now = r.now
+	}
+	startedAt := now()
+	r.perRequestMu.Lock()
+	if !r.perRequestNextRun.IsZero() && r.perRequestNextRun.After(startedAt) {
+		r.perRequestMu.Unlock()
+		return
+	}
+	// Reserve the retry window before doing I/O. Concurrent callers therefore
+	// collapse into this one attempt even if tests or future callers invoke the
+	// scheduler outside its normal single goroutine.
+	r.perRequestNextRun = startedAt.Add(upstreamPerRequestPriceRetryInterval)
+	r.perRequestMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(r.ctx, upstreamPerRequestPriceSyncTimeout)
+	result, err := r.monitor.SyncPerRequestPrices(ctx)
+	cancel()
+	nextInterval := upstreamPerRequestPriceSyncInterval
+	if err != nil {
+		nextInterval = upstreamPerRequestPriceRetryInterval
+		slog.Warn("upstream_per_request_price_sync_failed", "error", err)
+	} else if result != nil && result.ChangedModels > 0 {
+		slog.Info("upstream_per_request_price_sync_applied",
+			"models", result.Models,
+			"changed_models", result.ChangedModels,
+			"changed_channel_rows", result.ChangedChannelRows)
+	}
+	r.perRequestMu.Lock()
+	r.perRequestNextRun = now().Add(nextInterval)
+	r.perRequestMu.Unlock()
 }

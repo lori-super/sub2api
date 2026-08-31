@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,12 +13,17 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
-const upstreamPriceMonitorNotificationTimeout = 8 * time.Second
+const (
+	upstreamPriceMonitorNotificationTimeout         = 8 * time.Second
+	upstreamPriceMonitorNotificationStateSettingKey = "upstream_price_monitor_notification_state"
+	upstreamPriceMonitorHealthyFingerprint          = "healthy"
+)
 
 type UpstreamPriceMonitorNotificationAction string
 
@@ -55,11 +61,12 @@ type UpstreamPriceMonitorNotificationModel struct {
 }
 
 type UpstreamPriceMonitorNotificationPayload struct {
-	RunID      int64
-	Action     UpstreamPriceMonitorNotificationAction
-	Models     []UpstreamPriceMonitorNotificationModel
-	OccurredAt time.Time
-	Error      string
+	RunID         int64
+	Action        UpstreamPriceMonitorNotificationAction
+	Models        []UpstreamPriceMonitorNotificationModel
+	AppliedModels int
+	OccurredAt    time.Time
+	Error         string
 }
 
 type upstreamPriceMonitorNotificationSender interface {
@@ -74,6 +81,11 @@ type UpstreamPriceMonitorEmailNotifier struct {
 	settingRepo SettingRepository
 	sender      upstreamPriceMonitorNotificationSender
 	timeout     time.Duration
+	// stateMu serializes the settings-backed fingerprint transition inside one
+	// process. SettingRepository has no compare-and-swap primitive, so separate
+	// application replicas may still race; the durable email delivery key keeps
+	// a duplicate for the same run/action/recipient from being delivered.
+	stateMu sync.Mutex
 }
 
 func NewUpstreamPriceMonitorEmailNotifier(
@@ -117,6 +129,24 @@ func (n *UpstreamPriceMonitorEmailNotifier) send(ctx context.Context, payload Up
 		return
 	}
 
+	// Keep the read/compare/write transition and delivery together in this
+	// process. Repeated unhealthy runs with the same fingerprint stay quiet;
+	// a healthy no-change run advances the state without sending an email.
+	n.stateMu.Lock()
+	defer n.stateMu.Unlock()
+	deliver, nextFingerprint, err := n.notificationTransition(ctx, payload)
+	if err != nil {
+		slog.Warn("upstream price monitor notification state unavailable", "run_id", payload.RunID, "action", payload.Action, "err", err)
+		return
+	}
+	if !deliver {
+		if nextFingerprint != "" {
+			n.persistNotificationFingerprint(ctx, payload, nextFingerprint)
+		}
+		return
+	}
+
+	delivered := false
 	for _, recipient := range recipients {
 		if err := ctx.Err(); err != nil {
 			slog.Warn("upstream price monitor notification timed out", "run_id", payload.RunID, "action", payload.Action)
@@ -145,7 +175,133 @@ func (n *UpstreamPriceMonitorEmailNotifier) send(ctx context.Context, payload Up
 				"recipient_hash", notificationEmailHash(recipient),
 				"err", err,
 			)
+			continue
 		}
+		delivered = true
+	}
+	if delivered && nextFingerprint != "" {
+		n.persistNotificationFingerprint(ctx, payload, nextFingerprint)
+	}
+}
+
+func (n *UpstreamPriceMonitorEmailNotifier) notificationTransition(
+	ctx context.Context,
+	payload UpstreamPriceMonitorNotificationPayload,
+) (deliver bool, nextFingerprint string, err error) {
+	switch payload.Action {
+	case UpstreamPriceMonitorNotificationApplied, UpstreamPriceMonitorNotificationRolledBack:
+		if payload.AppliedModels > 0 {
+			return true, upstreamPriceMonitorHealthyFingerprint, nil
+		}
+		return false, upstreamPriceMonitorHealthyFingerprint, nil
+	case UpstreamPriceMonitorNotificationSuggested:
+		if !upstreamPriceMonitorHasTokenPriceChange(payload.Models) {
+			return false, upstreamPriceMonitorHealthyFingerprint, nil
+		}
+	case UpstreamPriceMonitorNotificationPartial,
+		UpstreamPriceMonitorNotificationFailed,
+		UpstreamPriceMonitorNotificationApplyFailed:
+		// These actions represent an unhealthy monitor state. The fingerprint
+		// below makes only the first occurrence of an unchanged state noisy.
+	default:
+		return false, "", nil
+	}
+
+	fingerprint := upstreamPriceMonitorNotificationFingerprint(payload)
+	current, getErr := n.settingRepo.GetValue(ctx, upstreamPriceMonitorNotificationStateSettingKey)
+	if getErr != nil && !errors.Is(getErr, ErrSettingNotFound) {
+		return false, "", getErr
+	}
+	if strings.TrimSpace(current) == fingerprint {
+		return false, "", nil
+	}
+	return true, fingerprint, nil
+}
+
+func (n *UpstreamPriceMonitorEmailNotifier) persistNotificationFingerprint(
+	ctx context.Context,
+	payload UpstreamPriceMonitorNotificationPayload,
+	fingerprint string,
+) {
+	current, err := n.settingRepo.GetValue(ctx, upstreamPriceMonitorNotificationStateSettingKey)
+	if err == nil && strings.TrimSpace(current) == fingerprint {
+		return
+	}
+	if err != nil && !errors.Is(err, ErrSettingNotFound) {
+		slog.Warn("upstream price monitor notification state read failed", "run_id", payload.RunID, "action", payload.Action, "err", err)
+		return
+	}
+	if err := n.settingRepo.Set(ctx, upstreamPriceMonitorNotificationStateSettingKey, fingerprint); err != nil {
+		slog.Warn("upstream price monitor notification state write failed", "run_id", payload.RunID, "action", payload.Action, "err", err)
+	}
+}
+
+func upstreamPriceMonitorHasTokenPriceChange(models []UpstreamPriceMonitorNotificationModel) bool {
+	for _, model := range models {
+		if upstreamPriceMonitorModelHasUnrepresentableFixedFee(model) {
+			continue
+		}
+		oldValues := []*float64{
+			model.OldPrices.InputPerMillion,
+			model.OldPrices.OutputPerMillion,
+			model.OldPrices.CacheWritePerMillion,
+			model.OldPrices.CacheReadPerMillion,
+		}
+		nextValues := []*float64{
+			model.SuggestedPrices.InputPerMillion,
+			model.SuggestedPrices.OutputPerMillion,
+			model.SuggestedPrices.CacheWritePerMillion,
+			model.SuggestedPrices.CacheReadPerMillion,
+		}
+		for index := range oldValues {
+			if nextValues[index] != nil && !sameUpstreamPriceMonitorNotificationFloat(oldValues[index], nextValues[index]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sameUpstreamPriceMonitorNotificationFloat(a, b *float64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	tolerance := math.Max(1e-12, math.Max(math.Abs(*a), math.Abs(*b))*1e-9)
+	return math.Abs(*a-*b) <= tolerance
+}
+
+func upstreamPriceMonitorNotificationFingerprint(payload UpstreamPriceMonitorNotificationPayload) string {
+	type fingerprintModel struct {
+		Model     string                     `json:"model"`
+		Old       domain.UpstreamPriceVector `json:"old"`
+		Measured  domain.UpstreamPriceVector `json:"measured"`
+		Suggested domain.UpstreamPriceVector `json:"suggested"`
+	}
+	models := sortedUpstreamPriceMonitorNotificationModels(payload.Models)
+	stableModels := make([]fingerprintModel, 0, len(models))
+	for _, model := range models {
+		stableModels = append(stableModels, fingerprintModel{
+			Model: strings.ToLower(strings.TrimSpace(model.Model)),
+			Old:   tokenOnlyUpstreamPriceVector(model.OldPrices), Measured: tokenOnlyUpstreamPriceVector(model.MeasuredPrices),
+			Suggested: tokenOnlyUpstreamPriceVector(model.SuggestedPrices),
+		})
+	}
+	stable := struct {
+		Action UpstreamPriceMonitorNotificationAction `json:"action"`
+		Models []fingerprintModel                     `json:"models"`
+		Error  string                                 `json:"error"`
+	}{payload.Action, stableModels, sanitizeUpstreamPriceMonitorNotificationError(payload.Error)}
+	raw, _ := json.Marshal(stable)
+	sum := sha256.Sum256(raw)
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func tokenOnlyUpstreamPriceVector(value domain.UpstreamPriceVector) domain.UpstreamPriceVector {
+	return domain.UpstreamPriceVector{
+		InputPerMillion:      value.InputPerMillion,
+		OutputPerMillion:     value.OutputPerMillion,
+		CacheWritePerMillion: value.CacheWritePerMillion,
+		CacheReadPerMillion:  value.CacheReadPerMillion,
 	}
 }
 
@@ -189,7 +345,6 @@ func upstreamPriceMonitorNotificationVariables(payload UpstreamPriceMonitorNotif
 	oldPrices := make([]string, 0, len(models))
 	measuredPrices := make([]string, 0, len(models))
 	suggestedPrices := make([]string, 0, len(models))
-	displayMultipliers := make([]string, 0, len(models))
 	for _, model := range models {
 		name := strings.TrimSpace(model.Model)
 		if name == "" {
@@ -199,25 +354,32 @@ func upstreamPriceMonitorNotificationVariables(payload UpstreamPriceMonitorNotif
 		oldPrices = append(oldPrices, name+": "+formatUpstreamPriceMonitorVector(model.OldPrices, zh))
 		measuredPrices = append(measuredPrices, name+": "+formatUpstreamPriceMonitorVector(model.MeasuredPrices, zh))
 		suggestedPrices = append(suggestedPrices, name+": "+formatUpstreamPriceMonitorVector(model.SuggestedPrices, zh))
-		displayMultipliers = append(displayMultipliers, name+": "+formatUpstreamPriceMonitorMultiplier(model.DisplayMultiplierCurrent, model.DisplayMultiplierSuggested))
+	}
+	displayScope := "Display prices and provider multipliers were not changed."
+	if zh {
+		displayScope = "展示价格与厂商倍率未修改。"
 	}
 
 	occurredAt := payload.OccurredAt
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
 	}
+	conclusionCount := len(models)
+	if payload.Action == UpstreamPriceMonitorNotificationApplied || payload.Action == UpstreamPriceMonitorNotificationRolledBack {
+		conclusionCount = payload.AppliedModels
+	}
 	return map[string]string{
 		"monitor_action":             payload.Action.label(zh),
 		"monitor_subject_action":     payload.Action.subjectLabel(zh),
 		"monitor_subject_models":     upstreamPriceMonitorSubjectModels(models, zh),
-		"monitor_conclusion":         payload.Action.conclusion(len(models), zh),
+		"monitor_conclusion":         payload.Action.conclusion(conclusionCount, zh),
 		"monitor_run_id":             strconv.FormatInt(payload.RunID, 10),
 		"monitor_model_count":        strconv.Itoa(len(models)),
 		"monitor_models":             upstreamPriceMonitorLinesOrDash(modelNames),
 		"monitor_old_prices":         upstreamPriceMonitorLinesOrDash(oldPrices),
 		"monitor_measured_prices":    upstreamPriceMonitorLinesOrDash(measuredPrices),
 		"monitor_suggested_prices":   upstreamPriceMonitorLinesOrDash(suggestedPrices),
-		"monitor_display_multiplier": upstreamPriceMonitorLinesOrDash(displayMultipliers),
+		"monitor_display_multiplier": displayScope,
 		"monitor_occurred_at":        occurredAt.UTC().Format(time.RFC3339),
 		"monitor_error":              sanitizeUpstreamPriceMonitorNotificationError(payload.Error),
 	}
@@ -226,11 +388,43 @@ func upstreamPriceMonitorNotificationVariables(payload UpstreamPriceMonitorNotif
 func upstreamPriceMonitorNotificationRawHTMLVariables(payload UpstreamPriceMonitorNotificationPayload, locale string) map[string]string {
 	zh := normalizeNotificationLocale(locale) == notificationEmailLocaleChinese
 	models := sortedUpstreamPriceMonitorNotificationModels(payload.Models)
+	errorText := strings.TrimSpace(payload.Error)
+	if warning := upstreamPriceMonitorFixedFeeWarning(models, zh); warning != "" {
+		if errorText != "" {
+			errorText += "; "
+		}
+		errorText += warning
+	}
 	return map[string]string{
 		"monitor_price_rows":       upstreamPriceMonitorPriceRows(models, zh),
-		"monitor_multiplier_cards": upstreamPriceMonitorMultiplierCards(models, zh),
-		"monitor_error_card":       upstreamPriceMonitorErrorCard(payload.Error, zh),
+		"monitor_multiplier_cards": upstreamPriceMonitorMultiplierCards(nil, zh),
+		"monitor_error_card":       upstreamPriceMonitorErrorCard(errorText, zh),
 	}
+}
+
+func upstreamPriceMonitorModelHasUnrepresentableFixedFee(model UpstreamPriceMonitorNotificationModel) bool {
+	for _, value := range []*float64{model.MeasuredPrices.FixedPerRequest, model.SuggestedPrices.FixedPerRequest} {
+		if value != nil && math.Abs(*value) > 1e-9 {
+			return true
+		}
+	}
+	return false
+}
+
+func upstreamPriceMonitorFixedFeeWarning(models []UpstreamPriceMonitorNotificationModel, zh bool) string {
+	names := make([]string, 0)
+	for _, model := range models {
+		if upstreamPriceMonitorModelHasUnrepresentableFixedFee(model) {
+			names = append(names, strings.TrimSpace(model.Model))
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	if zh {
+		return "以下模型含渠道 token 定价无法表示的固定请求费，本轮已跳过且未改价：" + strings.Join(names, "、")
+	}
+	return "Skipped without changing channel prices because fixed request fees cannot be represented: " + strings.Join(names, ", ")
 }
 
 func sortedUpstreamPriceMonitorNotificationModels(models []UpstreamPriceMonitorNotificationModel) []UpstreamPriceMonitorNotificationModel {
@@ -345,7 +539,7 @@ func (action UpstreamPriceMonitorNotificationAction) conclusion(modelCount int, 
 		case UpstreamPriceMonitorNotificationApplyFailed:
 			return "已生成调价方案，但自动应用失败，请查看错误详情。"
 		case UpstreamPriceMonitorNotificationRolledBack:
-			return fmt.Sprintf("已回滚 %d 个模型的渠道售价与展示倍率。", modelCount)
+			return fmt.Sprintf("已回滚 %d 个模型的渠道售价；展示价格与厂商倍率未修改。", modelCount)
 		}
 	}
 	switch action {
@@ -360,7 +554,7 @@ func (action UpstreamPriceMonitorNotificationAction) conclusion(modelCount int, 
 	case UpstreamPriceMonitorNotificationApplyFailed:
 		return "A pricing proposal was produced, but automatic application failed. Review the error below."
 	case UpstreamPriceMonitorNotificationRolledBack:
-		return fmt.Sprintf("Channel prices and display multipliers for %d model(s) were rolled back.", modelCount)
+		return fmt.Sprintf("Channel prices for %d model(s) were rolled back; display prices and provider multipliers were not changed.", modelCount)
 	default:
 		return "Upstream pricing monitor update."
 	}
@@ -381,15 +575,15 @@ func upstreamPriceMonitorModelDimensions(model UpstreamPriceMonitorNotificationM
 		{zhLabel: "输出", enLabel: "Output", unit: "/ 1M", old: model.OldPrices.OutputPerMillion, measured: model.MeasuredPrices.OutputPerMillion, suggested: model.SuggestedPrices.OutputPerMillion},
 		{zhLabel: "缓存写入", enLabel: "Cache write", unit: "/ 1M", old: model.OldPrices.CacheWritePerMillion, measured: model.MeasuredPrices.CacheWritePerMillion, suggested: model.SuggestedPrices.CacheWritePerMillion},
 		{zhLabel: "缓存读取", enLabel: "Cache read", unit: "/ 1M", old: model.OldPrices.CacheReadPerMillion, measured: model.MeasuredPrices.CacheReadPerMillion, suggested: model.SuggestedPrices.CacheReadPerMillion},
-		{zhLabel: "按次 ≤256K", enLabel: "Per request ≤256K", unit: "/ request", old: model.OldPrices.PerRequestLTE256K, measured: model.MeasuredPrices.PerRequestLTE256K, suggested: model.SuggestedPrices.PerRequestLTE256K},
-		{zhLabel: "按次 256K–512K", enLabel: "Per request 256K–512K", unit: "/ request", old: model.OldPrices.PerRequest256K512K, measured: model.MeasuredPrices.PerRequest256K512K, suggested: model.SuggestedPrices.PerRequest256K512K},
-		{zhLabel: "按次 >512K", enLabel: "Per request >512K", unit: "/ request", old: model.OldPrices.PerRequestGT512K, measured: model.MeasuredPrices.PerRequestGT512K, suggested: model.SuggestedPrices.PerRequestGT512K},
 	}
 }
 
 func upstreamPriceMonitorPriceRows(models []UpstreamPriceMonitorNotificationModel, zh bool) string {
 	var builder strings.Builder
 	for _, model := range models {
+		if upstreamPriceMonitorModelHasUnrepresentableFixedFee(model) {
+			continue
+		}
 		name := strings.TrimSpace(model.Model)
 		if name == "" {
 			name = "-"
@@ -472,9 +666,9 @@ func upstreamPriceMonitorMultiplierCards(models []UpstreamPriceMonitorNotificati
 	if builder.Len() > 0 {
 		return builder.String()
 	}
-	message := "No display multiplier change."
+	message := "Display prices and provider multipliers were not changed."
 	if zh {
-		message = "本轮无展示倍率变更。"
+		message = "展示价格与厂商倍率未修改。"
 	}
 	return `<div class="empty multiplier-empty">` + html.EscapeString(message) + `</div>`
 }
@@ -510,9 +704,6 @@ func formatUpstreamPriceMonitorVector(vector domain.UpstreamPriceVector, zh bool
 		{zhLabel: "输出", enLabel: "output", value: vector.OutputPerMillion, unit: "/1M"},
 		{zhLabel: "缓存写入", enLabel: "cache write", value: vector.CacheWritePerMillion, unit: "/1M"},
 		{zhLabel: "缓存读取", enLabel: "cache read", value: vector.CacheReadPerMillion, unit: "/1M"},
-		{zhLabel: "按次 ≤256K", enLabel: "per request ≤256K", value: vector.PerRequestLTE256K, unit: "/request"},
-		{zhLabel: "按次 256K-512K", enLabel: "per request 256K-512K", value: vector.PerRequest256K512K, unit: "/request"},
-		{zhLabel: "按次 >512K", enLabel: "per request >512K", value: vector.PerRequestGT512K, unit: "/request"},
 	}
 	parts := make([]string, 0, len(dimensions))
 	for _, item := range dimensions {
@@ -599,6 +790,7 @@ func cloneUpstreamPriceMonitorNotificationPayload(payload UpstreamPriceMonitorNo
 
 func cloneUpstreamPriceVector(vector domain.UpstreamPriceVector) domain.UpstreamPriceVector {
 	return domain.UpstreamPriceVector{
+		FixedPerRequest:      cloneUpstreamPriceFloat(vector.FixedPerRequest),
 		InputPerMillion:      cloneUpstreamPriceFloat(vector.InputPerMillion),
 		OutputPerMillion:     cloneUpstreamPriceFloat(vector.OutputPerMillion),
 		CacheWritePerMillion: cloneUpstreamPriceFloat(vector.CacheWritePerMillion),

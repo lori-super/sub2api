@@ -70,6 +70,9 @@ func (r *upstreamPriceAutoApplyRepository) FreezeEvidenceApplySnapshot(
 	return []domain.UpstreamPriceEvidence{{
 		ID: 1, RunID: 77, AccountID: 7, ModelName: "MiniMax-M3",
 		BillingMode: DisplayBillingModeToken, Status: domain.UpstreamPriceEvidenceStatusTrusted,
+		Source:               domain.UpstreamPriceEvidenceSourceActiveProbe,
+		ReconciliationStatus: domain.UpstreamPriceReconciliationMatched,
+		ContextKey:           "active-final",
 	}}, nil
 }
 
@@ -148,7 +151,8 @@ func testAutoApplyConfig() domain.UpstreamPriceMonitorConfig {
 	cfg := domain.DefaultUpstreamPriceMonitorConfig()
 	cfg.Enabled = true
 	cfg.Mode = domain.UpstreamPriceMonitorModeAutoApply
-	cfg.IntervalMinutes = 15
+	cfg.IntervalMinutes = 1440
+	cfg.ActiveProbeEnabled = true
 	cfg.AccountIDs = []int64{7}
 	cfg.ChannelIDs = []int64{3}
 	cfg.DomesticModels = []string{"MiniMax-M3"}
@@ -210,6 +214,7 @@ func TestUpstreamPriceMonitorManualRunAlwaysStaysDryRun(t *testing.T) {
 	}
 	remote := &activeProbeScript{now: time.Date(2026, 8, 31, 1, 15, 0, 0, time.UTC)}
 	svc := NewUpstreamPriceMonitorService(repo, upstreamPriceAutoApplyAccountReader{account: testUpstreamPriceAccount()}, remote)
+	svc.SetActiveProber(remote)
 
 	run, err := svc.RunOnce(context.Background(), UpstreamPriceRunOptions{
 		Trigger: domain.UpstreamPriceMonitorRunTriggerManual,
@@ -231,6 +236,7 @@ func TestUpstreamPriceMonitorScheduledAutoApplyInvalidatesPricingCache(t *testin
 	}
 	remote := &activeProbeScript{now: time.Date(2026, 8, 31, 1, 15, 0, 0, time.UTC)}
 	svc := NewUpstreamPriceMonitorService(repo, upstreamPriceAutoApplyAccountReader{account: testUpstreamPriceAccount()}, remote)
+	svc.SetActiveProber(remote)
 	invalidator := &upstreamPriceCacheInvalidator{}
 	svc.SetPricingCacheInvalidator(invalidator)
 

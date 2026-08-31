@@ -1,7 +1,9 @@
 package admin
 
 import (
+	"context"
 	"strconv"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -139,15 +141,65 @@ func (h *UpstreamPriceMonitorHandler) CreateRun(c *gin.Context) {
 		response.BadRequest(c, "Manual upstream price monitor runs must use dry_run=true")
 		return
 	}
-	run, err := h.monitor.RunOnce(c.Request.Context(), service.UpstreamPriceRunOptions{
-		Trigger: domain.UpstreamPriceMonitorRunTriggerManual,
-		DryRun:  true, // Manual collection is always observation-only; apply is an explicit second action.
-	})
-	if err != nil && run == nil {
+	// A full active-only round can take many minutes. Detach it from the HTTP
+	// request and return as soon as its durable running row is visible; the UI
+	// polls the existing runtime/runs endpoints for progress and completion.
+	beforeID := int64(0)
+	page, err := h.monitor.ListRuns(c.Request.Context(), 1, 0)
+	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, sanitizeUpstreamPriceMonitorRun(run))
+	if page != nil && len(page.Items) > 0 {
+		beforeID = page.Items[0].ID
+	}
+	runCtx, cancelRun := context.WithTimeout(context.Background(), 46*time.Minute)
+	type runResult struct {
+		run *domain.UpstreamPriceMonitorRun
+		err error
+	}
+	resultCh := make(chan runResult, 1)
+	go func() {
+		defer cancelRun()
+		run, err := h.monitor.RunOnce(runCtx, service.UpstreamPriceRunOptions{
+			Trigger: domain.UpstreamPriceMonitorRunTriggerManual,
+			DryRun:  true, // Manual collection is always observation-only; apply remains scheduler-controlled.
+		})
+		resultCh <- runResult{run: run, err: err}
+	}()
+
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case result := <-resultCh:
+			if result.err != nil && result.run == nil {
+				response.ErrorFrom(c, result.err)
+				return
+			}
+			response.Accepted(c, gin.H{
+				"accepted": true, "poll_after_ms": 2000,
+				"run": sanitizeUpstreamPriceMonitorRun(result.run),
+			})
+			return
+		case <-ticker.C:
+			page, err := h.monitor.ListRuns(c.Request.Context(), 1, 0)
+			if err != nil || page == nil || len(page.Items) == 0 || page.Items[0].ID <= beforeID {
+				continue
+			}
+			response.Accepted(c, gin.H{
+				"accepted": true, "poll_after_ms": 2000,
+				"run": sanitizeUpstreamPriceMonitorRun(&page.Items[0]),
+			})
+			return
+		case <-deadline.C:
+			cancelRun()
+			response.ErrorFrom(c, service.ErrUpstreamPriceMonitorUnavailable)
+			return
+		}
+	}
 }
 
 type upstreamPriceRunActionRequest struct {

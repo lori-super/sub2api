@@ -41,23 +41,28 @@ import UpstreamPriceMonitorView from '../UpstreamPriceMonitorView.vue'
 
 const config = {
   enabled: true,
-  mode: 'observe' as const,
-  interval_minutes: 15,
+  mode: 'auto_apply' as const,
+  interval_minutes: 1440,
   markup: 1.2,
   display_multiplier_decimals: 3,
   account_ids: [7],
   channel_ids: [3],
   domestic_models: ['deepseek-v4-flash-0731'],
   per_request_models: ['deepseek-v4-flash-0731'],
-  passive_sample_max_age_minutes: 60,
+  passive_sample_max_age_minutes: 1440,
   active_probe_enabled: true,
+  active_only: true,
+  active_probe_max_models_per_run: 19,
+  active_probe_max_requests_per_model: 7,
+  active_probe_run_budget_usd: 0.15,
+  active_probe_daily_budget_usd: 0.20,
 }
 
 const completedRun = {
   id: 1,
   trigger: 'manual',
   status: 'completed' as const,
-  mode: 'observe',
+  mode: 'auto_apply',
   dry_run: true,
   started_at: '2026-08-30T00:00:00Z',
   matched_models: 1,
@@ -109,7 +114,9 @@ describe('UpstreamPriceMonitorView', () => {
       next_run_at: null,
       consecutive_failures: 0,
       last_error: '',
-      today_probe_cost: 0,
+      today_probe_cost: 0.07,
+      current_run_probe_cost: 0.03,
+      remaining_daily_probe_budget_usd: 0.13,
       coverage: { trusted: 1, total: 1 },
       key_exclusive: true,
     })
@@ -119,13 +126,16 @@ describe('UpstreamPriceMonitorView', () => {
         account_id: 7,
         billing_mode: 'token',
         status: 'trusted',
-        source: 'user_request',
+        source: 'active_probe',
         reconciliation_status: 'closed',
         observed_at: '2026-08-30T00:00:00Z',
         sample_count: 3,
         prices: { input_per_million: 0.16, output_per_million: 0.47, cache_read_per_million: 0.016 },
         current_prices: { input_per_million: 0.18, output_per_million: 0.5 },
         suggested_prices: { input_per_million: 0.192, output_per_million: 0.564 },
+        dimension_statuses: {
+          input: 'observed', output: 'observed', cache_write: 'unobserved', cache_read: 'observed',
+        },
         display_multiplier_current: 0.1,
         display_multiplier_suggested: 0.12,
       }],
@@ -150,7 +160,7 @@ describe('UpstreamPriceMonitorView', () => {
     channelList.mockResolvedValue({ items: [{ id: 3, name: 'x5m5x token' }], total: 1 })
   })
 
-  it('renders all three tabs and identifies passive customer evidence', async () => {
+  it('renders active-only evidence with per-dimension observability and probe costs', async () => {
     const wrapper = mountView()
     await flushPromises()
 
@@ -158,9 +168,13 @@ describe('UpstreamPriceMonitorView', () => {
     expect(wrapper.get('[data-testid="tab-config"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="tab-history"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('deepseek-v4-flash-0731')
-    expect(wrapper.text()).toContain('admin.upstreamPriceMonitor.source.user_request')
+    expect(wrapper.text()).toContain('admin.upstreamPriceMonitor.source.active_probe')
     expect(wrapper.text()).toContain('$0.18')
     expect(wrapper.text()).toContain('$0.192')
+    expect(wrapper.get('[data-testid="current-run-cost"]').text()).toBe('$0.03')
+    expect(wrapper.get('[data-testid="today-probe-cost"]').text()).toBe('$0.07')
+    expect(wrapper.get('[data-testid="dimension-status-deepseek-v4-flash-0731-input"]').text()).toContain('dimension.observed')
+    expect(wrapper.get('[data-testid="dimension-status-deepseek-v4-flash-0731-cache_write"]').text()).toContain('dimension.unobserved')
   })
 
   it('creates an explicit dry run and never applies it implicitly', async () => {
@@ -188,24 +202,58 @@ describe('UpstreamPriceMonitorView', () => {
     wrapper.unmount()
   })
 
-  it('submits auto apply and active probe values without credentials', async () => {
+  it('submits the fixed active-only strategy and safety budgets without credentials', async () => {
     const wrapper = mountView()
     await flushPromises()
     await wrapper.get('[data-testid="tab-config"]').trigger('click')
-    await wrapper.get('[data-testid="config-mode"]').setValue('auto_apply')
-    await flushPromises()
     await wrapper.get('[data-testid="config-panel"] form').trigger('submit')
     await flushPromises()
 
     expect(api.updateConfig).toHaveBeenCalledWith(expect.objectContaining({
       mode: 'auto_apply',
       active_probe_enabled: true,
+      active_only: true,
+      interval_minutes: 1440,
+      markup: 1.2,
+      active_probe_max_models_per_run: 19,
+      active_probe_max_requests_per_model: 7,
+      active_probe_run_budget_usd: 0.15,
+      active_probe_daily_budget_usd: 0.20,
       account_ids: [7],
       channel_ids: [3],
       domestic_models: ['deepseek-v4-flash-0731'],
       per_request_models: ['deepseek-v4-flash-0731'],
     }))
     expect(JSON.stringify(api.updateConfig.mock.calls[0]?.[0])).not.toContain('api_key')
+    expect(wrapper.get('[data-testid="active-only-notice"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="change-only-notice"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="exclusive-key-warning"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('never renders a raw upstream English error', async () => {
+    api.getRuntime.mockResolvedValueOnce({
+      status: 'failed', last_run_at: null, next_run_at: null, consecutive_failures: 1,
+      last_error: 'upstream returned 502 Bad Gateway for probe model', today_probe_cost: 0,
+      coverage: { trusted: 0, total: 1 },
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('upstream returned 502 Bad Gateway')
+    expect(wrapper.text()).toContain('admin.upstreamPriceMonitor.error.upstream')
+    wrapper.unmount()
+  })
+
+  it('localizes raw request errors before showing a toast', async () => {
+    api.createRun.mockRejectedValueOnce(new Error('upstream returned 503 Service Unavailable'))
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="run-now"]').trigger('click')
+    await flushPromises()
+
+    expect(showError).toHaveBeenCalledWith('admin.upstreamPriceMonitor.error.upstream')
+    expect(showError).not.toHaveBeenCalledWith(expect.stringContaining('Service Unavailable'))
     wrapper.unmount()
   })
 

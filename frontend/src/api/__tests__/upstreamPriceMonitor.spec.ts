@@ -20,16 +20,21 @@ describe('upstream price monitor API', () => {
   it('uses the isolated admin monitor endpoints', async () => {
     const config = {
       enabled: true,
-      mode: 'observe' as const,
-      interval_minutes: 15,
+      mode: 'auto_apply' as const,
+      interval_minutes: 1440,
       markup: 1.2,
       display_multiplier_decimals: 3,
       account_ids: [7],
       channel_ids: [3],
       domestic_models: ['deepseek-v4-flash-0731'],
       per_request_models: ['deepseek-v4-flash-0731'],
-      passive_sample_max_age_minutes: 60,
+      passive_sample_max_age_minutes: 1440,
       active_probe_enabled: true,
+      active_only: true,
+      active_probe_max_models_per_run: 19,
+      active_probe_max_requests_per_model: 7,
+      active_probe_run_budget_usd: 0.15,
+      active_probe_daily_budget_usd: 0.20,
     }
     get.mockResolvedValueOnce({ data: config })
     put.mockResolvedValueOnce({ data: config })
@@ -54,9 +59,11 @@ describe('upstream price monitor API', () => {
       probe_cost: 0,
       snapshot_hash: 'abc123',
     }
-    post.mockResolvedValue({ data: run })
+    post
+      .mockResolvedValueOnce({ data: { accepted: true, poll_after_ms: 2000, run } })
+      .mockResolvedValue({ data: run })
 
-    await upstreamPriceMonitorAPI.createRun()
+    await expect(upstreamPriceMonitorAPI.createRun()).resolves.toEqual(run)
     await upstreamPriceMonitorAPI.applyRun(1, { snapshot_hash: 'abc123' })
     await upstreamPriceMonitorAPI.rollbackRun(1, { snapshot_hash: 'abc123' })
 

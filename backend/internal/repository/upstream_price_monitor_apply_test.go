@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"regexp"
 	"testing"
 	"time"
@@ -87,6 +88,144 @@ func TestMergeCompatibleUpstreamPriceVectorsCombinesPassiveAndActiveDimensions(t
 	require.False(t, ok)
 }
 
+func TestLoadTrustedApplyEvidenceSelectsOnlyFinalActiveTokenEvidence(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+
+	mock.ExpectQuery(`WHERE run_id=\$1 AND source='active_probe' AND billing_mode='token' AND status='trusted'`).
+		WithArgs(int64(71)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"account_id", "model_name", "billing_mode", "status", "source", "context_key",
+			"prices", "current_prices", "suggested_prices",
+		}).AddRow(int64(3), "mimo-v2.5-pro", service.DisplayBillingModeToken,
+			string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceActiveProbe),
+			"active-final", []byte(`{"cache_read_per_million":0.05}`),
+			[]byte(`{"input_per_million":0.12,"cache_read_per_million":0.04}`),
+			[]byte(`{"cache_read_per_million":0.06}`)))
+
+	items, skipped, err := loadTrustedApplyEvidence(context.Background(), tx, 71, []int64{3})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Empty(t, skipped)
+	require.Equal(t, "mimo-v2.5-pro", items[0].Model)
+	require.Nil(t, items[0].Suggested.InputPerMillion, "an unobserved dimension must preserve the channel value")
+	require.NotNil(t, items[0].Suggested.CacheReadPerMillion)
+	require.InDelta(t, 0.06, *items[0].Suggested.CacheReadPerMillion, 1e-12)
+
+	mock.ExpectRollback()
+	require.NoError(t, tx.Rollback())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestLoadTrustedApplyEvidenceSkipsFixedFeeModelAndKeepsOtherModels(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+
+	mock.ExpectQuery(`WHERE run_id=\$1 AND source='active_probe' AND billing_mode='token' AND status='trusted'`).
+		WithArgs(int64(72)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"account_id", "model_name", "billing_mode", "status", "source", "context_key",
+			"prices", "current_prices", "suggested_prices",
+		}).AddRow(int64(3), "fixed-fee-model", service.DisplayBillingModeToken,
+			string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceActiveProbe),
+			"active-final", []byte(`{"fixed_per_request":0.001,"input_per_million":0.2}`),
+			[]byte(`{"input_per_million":0.1}`),
+			[]byte(`{"fixed_per_request":0.0012,"input_per_million":0.24}`)).
+			AddRow(int64(3), "representable-model", service.DisplayBillingModeToken,
+				string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceActiveProbe),
+				"active-final", []byte(`{"input_per_million":0.2}`),
+				[]byte(`{"input_per_million":0.1}`), []byte(`{"input_per_million":0.24}`)))
+
+	items, skipped, err := loadTrustedApplyEvidence(context.Background(), tx, 72, []int64{3})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, "representable-model", items[0].Model)
+	require.Equal(t, []upstreamPriceApplySkippedModel{{
+		Model: "fixed-fee-model", Reason: "fixed_request_fee_not_representable", FixedPerRequest: 0.001,
+	}}, skipped)
+
+	mock.ExpectRollback()
+	require.NoError(t, tx.Rollback())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestApplyRunAllFixedFeeModelsRecordsSkipSummaryThenReturnsNotApplicable(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	now := time.Now().UTC()
+	configUpdatedAt := now.Add(-time.Hour)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT trigger,status,snapshot_hash,applied_at,finished_at`).
+		WithArgs(int64(75)).
+		WillReturnRows(sqlmock.NewRows([]string{"trigger", "status", "snapshot_hash", "applied_at", "finished_at"}).
+			AddRow(string(domain.UpstreamPriceMonitorRunTriggerScheduled), string(domain.UpstreamPriceMonitorRunStatusCompleted),
+				"snapshot", nil, now))
+	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM upstream_price_monitor_runs`).
+		WithArgs(now, int64(75)).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery(`SELECT enabled,mode,updated_at FROM upstream_price_monitor_config`).
+		WillReturnRows(sqlmock.NewRows([]string{"enabled", "mode", "updated_at"}).
+			AddRow(true, string(domain.UpstreamPriceMonitorModeAutoApply), configUpdatedAt))
+	mock.ExpectQuery(`SELECT revision FROM upstream_price_monitor_model_scan_state`).
+		WillReturnRows(sqlmock.NewRows([]string{"revision"}).AddRow(int64(1)))
+	mock.ExpectQuery(`WHERE run_id=\$1 AND source='active_probe' AND billing_mode='token' AND status='trusted'`).
+		WithArgs(int64(75)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"account_id", "model_name", "billing_mode", "status", "source", "context_key",
+			"prices", "current_prices", "suggested_prices",
+		}).AddRow(int64(3), "fixed-only", service.DisplayBillingModeToken,
+			string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceActiveProbe),
+			"active-final", []byte(`{"fixed_per_request":0.001,"input_per_million":0.2}`),
+			[]byte(`{"input_per_million":0.1}`),
+			[]byte(`{"fixed_per_request":0.0012,"input_per_million":0.24}`)))
+	mock.ExpectExec(`summary=jsonb_set\(summary,'\{skipped_models\}',\$2::jsonb,true\)`).
+		WithArgs(int64(75), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	repo := &upstreamPriceMonitorRepository{db: db}
+	err = repo.ApplyRun(context.Background(), 75, "snapshot", []int64{8}, []int64{3}, 3, 60, configUpdatedAt, 1)
+	require.ErrorIs(t, err, service.ErrUpstreamPriceRunNotApplicable)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestLoadTrustedApplyEvidenceRejectsSuggestionNotEqualToMeasuredTimesMarkup(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+
+	mock.ExpectQuery(`WHERE run_id=\$1 AND source='active_probe' AND billing_mode='token' AND status='trusted'`).
+		WithArgs(int64(73)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"account_id", "model_name", "billing_mode", "status", "source", "context_key",
+			"prices", "current_prices", "suggested_prices",
+		}).AddRow(int64(3), "bad-markup-model", service.DisplayBillingModeToken,
+			string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceActiveProbe),
+			"active-final", []byte(`{"input_per_million":0.2}`), []byte(`{"input_per_million":0.1}`),
+			[]byte(`{"input_per_million":0.3}`)))
+
+	_, _, err = loadTrustedApplyEvidence(context.Background(), tx, 73, []int64{3})
+	require.ErrorIs(t, err, service.ErrUpstreamPriceSnapshotMismatch)
+
+	mock.ExpectRollback()
+	require.NoError(t, tx.Rollback())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestValidateUpstreamPriceApplyEvidenceRejectsZero(t *testing.T) {
 	zero := 0.0
 	err := validateUpstreamPriceApplyEvidence([]upstreamPriceApplyEvidence{{
@@ -165,6 +304,33 @@ func TestAssertPerRequestDisplaySnapshotPreservesNullSemantics(t *testing.T) {
 		service.ErrUpstreamPriceSnapshotMismatch)
 }
 
+func TestRollbackRunRejectsLegacyDisplaySnapshotWithoutMutatingDisplayPrices(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	now := time.Now().UTC()
+	raw, err := json.Marshal(upstreamPriceRollbackSnapshot{
+		Displays: []upstreamPriceDisplayRollback{{ID: 81, ModelMultiplier: stringPointer("0.1"), AfterModelMultiplier: stringPointer("0.12")}},
+	})
+	require.NoError(t, err)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT snapshot_hash,applied_at,rollback_available,rollback_snapshot`).
+		WithArgs(int64(74)).
+		WillReturnRows(sqlmock.NewRows([]string{"snapshot_hash", "applied_at", "rollback_available", "rollback_snapshot"}).
+			AddRow("snapshot", now, true, raw))
+	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM upstream_price_monitor_runs`).
+		WithArgs(now).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectRollback()
+
+	repo := &upstreamPriceMonitorRepository{db: db}
+	err = repo.RollbackRun(context.Background(), 74, "snapshot")
+	require.ErrorIs(t, err, service.ErrUpstreamPriceRunNotApplicable)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestLoadLockedUpstreamChannelPricingRowsFiltersOpenAIPlatform(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -203,16 +369,16 @@ func TestFreezeEvidenceApplySnapshotPersistsCurrentPricesAndMultiplier(t *testin
 			"id", "run_id", "account_id", "model_name", "billing_mode", "status", "source",
 			"reconciliation_status", "context_key", "observed_at", "sample_count", "local_delta",
 			"remote_delta", "prices", "current_prices", "suggested_prices", "display_prices_current", "display_multiplier_current",
-			"display_multiplier_suggested", "last_error", "created_at",
+			"display_multiplier_suggested", "dimension_statuses", "last_error", "created_at",
 		}).AddRow(int64(32), int64(12), int64(0), "deepseek-request-freeze", service.DisplayBillingModePerRequest,
 			string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourcePricePage),
 			string(domain.UpstreamPriceReconciliationMatched), "price-page", now, 1, []byte(`{}`), []byte(`{}`),
 			[]byte(`{}`), []byte(`{}`), []byte(`{"per_request_lte_256k":0.012,"per_request_256k_512k":0.018,"per_request_gt_512k":0.024}`),
-			[]byte(`{}`), nil, nil, "", now).
+			[]byte(`{}`), nil, nil, []byte(`{}`), "", now).
 			AddRow(int64(31), int64(12), int64(3), "deepseek-freeze", service.DisplayBillingModeToken,
 				string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceUserRequest),
 				string(domain.UpstreamPriceReconciliationMatched), "ctx", now, 2, []byte(`{}`), []byte(`{}`),
-				[]byte(`{}`), []byte(`{}`), []byte(`{"input_per_million":1.2}`), []byte(`{}`), nil, nil, "", now))
+				[]byte(`{}`), []byte(`{}`), []byte(`{"input_per_million":1.2}`), []byte(`{}`), nil, nil, []byte(`{}`), "", now))
 	mock.ExpectQuery(`(?s)SELECT LOWER\(cmp.models->>0\),cmp.billing_mode,.*cmp.platform='openai'`).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"model", "billing_mode", "input", "output", "cache_write", "cache_read", "low", "middle", "high",
@@ -256,12 +422,12 @@ func TestFreezeEvidenceApplySnapshotAllowsObserveOnlyRunWithoutChannels(t *testi
 			"id", "run_id", "account_id", "model_name", "billing_mode", "status", "source",
 			"reconciliation_status", "context_key", "observed_at", "sample_count", "local_delta",
 			"remote_delta", "prices", "current_prices", "suggested_prices", "display_prices_current", "display_multiplier_current",
-			"display_multiplier_suggested", "last_error", "created_at",
+			"display_multiplier_suggested", "dimension_statuses", "last_error", "created_at",
 		}).AddRow(int64(41), int64(14), int64(3), "deepseek-observe", service.DisplayBillingModeToken,
 			string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceUserRequest),
 			string(domain.UpstreamPriceReconciliationMatched), "ctx", now, 1, []byte(`{}`), []byte(`{}`),
 			[]byte(`{"input_per_million":1}`), []byte(`{}`), []byte(`{"input_per_million":1.2}`),
-			[]byte(`{}`), nil, nil, "", now))
+			[]byte(`{}`), nil, nil, []byte(`{}`), "", now))
 	mock.ExpectExec(`UPDATE upstream_price_monitor_evidence SET`).
 		WithArgs(int64(41), []byte(`{}`), []byte(`{}`), nil, int64(14)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -287,12 +453,12 @@ func TestListEvidenceByRunKeepsCompletedSnapshotFrozen(t *testing.T) {
 			"id", "run_id", "account_id", "model_name", "billing_mode", "status", "source",
 			"reconciliation_status", "context_key", "observed_at", "sample_count", "local_delta",
 			"remote_delta", "prices", "current_prices", "suggested_prices", "display_prices_current", "display_multiplier_current",
-			"display_multiplier_suggested", "last_error", "created_at",
+			"display_multiplier_suggested", "dimension_statuses", "last_error", "created_at",
 		}).AddRow(int64(51), int64(21), int64(3), "deepseek-frozen", service.DisplayBillingModeToken,
 			string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceUserRequest),
 			string(domain.UpstreamPriceReconciliationMatched), "ctx", now, 1, []byte(`{}`), []byte(`{}`),
 			[]byte(`{"input_per_million":1}`), []byte(`{"input_per_million":0.75}`),
-			[]byte(`{"input_per_million":1.2}`), []byte(`{}`), 0.25, 0.4, "", now))
+			[]byte(`{"input_per_million":1.2}`), []byte(`{}`), 0.25, 0.4, []byte(`{}`), "", now))
 	summary := []byte(`{"account_ids":[3],"account_ledger_hashes":{"3":"ledger"},"account_identity_hashes":{"3":"identity"},"channel_ids":[8],"display_multiplier_decimals":3,"snapshot_max_age_minutes":60,"config_updated_at":"2026-08-30T00:00:00Z","model_catalog_revision":1}`)
 	mock.ExpectQuery(`SELECT id,trigger,status,mode,dry_run,started_at,finished_at`).
 		WithArgs(int64(21)).
@@ -326,12 +492,12 @@ func TestListEvidenceByRunMayEnrichRunningRun(t *testing.T) {
 			"id", "run_id", "account_id", "model_name", "billing_mode", "status", "source",
 			"reconciliation_status", "context_key", "observed_at", "sample_count", "local_delta",
 			"remote_delta", "prices", "current_prices", "suggested_prices", "display_prices_current", "display_multiplier_current",
-			"display_multiplier_suggested", "last_error", "created_at",
+			"display_multiplier_suggested", "dimension_statuses", "last_error", "created_at",
 		}).AddRow(int64(52), int64(22), int64(3), "deepseek-running", service.DisplayBillingModeToken,
 			string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceUserRequest),
 			string(domain.UpstreamPriceReconciliationMatched), "ctx", now, 1, []byte(`{}`), []byte(`{}`),
 			[]byte(`{"input_per_million":1}`), []byte(`{}`), []byte(`{"input_per_million":1.2}`),
-			[]byte(`{}`), nil, 0.4, "", now))
+			[]byte(`{}`), nil, 0.4, []byte(`{}`), "", now))
 	summary := []byte(`{"account_ids":[3],"account_ledger_hashes":{"3":"ledger"},"account_identity_hashes":{"3":"identity"},"channel_ids":[8],"display_multiplier_decimals":3,"snapshot_max_age_minutes":60,"config_updated_at":"2026-08-30T00:00:00Z","model_catalog_revision":1}`)
 	mock.ExpectQuery(`SELECT id,trigger,status,mode,dry_run,started_at,finished_at`).
 		WithArgs(int64(22)).

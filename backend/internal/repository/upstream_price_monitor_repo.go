@@ -32,11 +32,15 @@ func (r *upstreamPriceMonitorRepository) GetConfig(ctx context.Context) (*domain
 	var cfg domain.UpstreamPriceMonitorConfig
 	err := r.db.QueryRowContext(ctx, `SELECT enabled, mode, interval_minutes, markup,
 		display_multiplier_decimals, account_ids, channel_ids, domestic_models, per_request_models,
-		passive_sample_max_age_minutes, active_probe_enabled, updated_at
+		passive_sample_max_age_minutes, active_probe_enabled, active_only,
+		active_probe_max_requests_per_model, active_probe_max_models_per_run,
+		active_probe_run_budget_usd, active_probe_daily_budget_usd, updated_at
 		FROM upstream_price_monitor_config WHERE id=1`).Scan(
 		&cfg.Enabled, &cfg.Mode, &cfg.IntervalMinutes, &cfg.Markup,
 		&cfg.DisplayMultiplierDecimals, pq.Array(&cfg.AccountIDs), pq.Array(&cfg.ChannelIDs), pq.Array(&cfg.DomesticModels), pq.Array(&cfg.PerRequestModels),
-		&cfg.PassiveSampleMaxAgeMinutes, &cfg.ActiveProbeEnabled, &cfg.UpdatedAt,
+		&cfg.PassiveSampleMaxAgeMinutes, &cfg.ActiveProbeEnabled, &cfg.ActiveOnly,
+		&cfg.ActiveProbeMaxRequests, &cfg.ActiveProbeMaxModels,
+		&cfg.ActiveProbeRunBudgetUSD, &cfg.ActiveProbeDailyBudgetUSD, &cfg.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		defaults := domain.DefaultUpstreamPriceMonitorConfig()
@@ -85,18 +89,24 @@ func (r *upstreamPriceMonitorRepository) UpdateConfig(ctx context.Context, cfg *
 	}
 	if err := tx.QueryRowContext(ctx, `INSERT INTO upstream_price_monitor_config
 		(id,enabled,mode,interval_minutes,markup,display_multiplier_decimals,account_ids,channel_ids,domestic_models,per_request_models,
-		 passive_sample_max_age_minutes,active_probe_enabled,updated_at)
-		VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+		 passive_sample_max_age_minutes,active_probe_enabled,active_only,active_probe_max_requests_per_model,
+		 active_probe_max_models_per_run,active_probe_run_budget_usd,active_probe_daily_budget_usd,updated_at)
+		VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
 		ON CONFLICT (id) DO UPDATE SET enabled=EXCLUDED.enabled,mode=EXCLUDED.mode,
 		interval_minutes=EXCLUDED.interval_minutes,markup=EXCLUDED.markup,
 		display_multiplier_decimals=EXCLUDED.display_multiplier_decimals,account_ids=EXCLUDED.account_ids,
 		channel_ids=EXCLUDED.channel_ids,domestic_models=EXCLUDED.domestic_models,
 		per_request_models=EXCLUDED.per_request_models,
 		passive_sample_max_age_minutes=EXCLUDED.passive_sample_max_age_minutes,
-		active_probe_enabled=EXCLUDED.active_probe_enabled,updated_at=NOW()
+		active_probe_enabled=EXCLUDED.active_probe_enabled,active_only=EXCLUDED.active_only,
+		active_probe_max_requests_per_model=EXCLUDED.active_probe_max_requests_per_model,
+		active_probe_max_models_per_run=EXCLUDED.active_probe_max_models_per_run,
+		active_probe_run_budget_usd=EXCLUDED.active_probe_run_budget_usd,
+		active_probe_daily_budget_usd=EXCLUDED.active_probe_daily_budget_usd,updated_at=NOW()
 		RETURNING updated_at`, cfg.Enabled, cfg.Mode, cfg.IntervalMinutes, cfg.Markup,
 		cfg.DisplayMultiplierDecimals, pq.Array(cfg.AccountIDs), pq.Array(cfg.ChannelIDs), pq.Array(cfg.DomesticModels), pq.Array(cfg.PerRequestModels),
-		cfg.PassiveSampleMaxAgeMinutes, cfg.ActiveProbeEnabled).Scan(&cfg.UpdatedAt); err != nil {
+		cfg.PassiveSampleMaxAgeMinutes, cfg.ActiveProbeEnabled, cfg.ActiveOnly, cfg.ActiveProbeMaxRequests,
+		cfg.ActiveProbeMaxModels, cfg.ActiveProbeRunBudgetUSD, cfg.ActiveProbeDailyBudgetUSD).Scan(&cfg.UpdatedAt); err != nil {
 		return err
 	}
 	if accountScopeChanged {
@@ -127,11 +137,12 @@ func (r *upstreamPriceMonitorRepository) CreateRun(ctx context.Context, run *dom
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	// A process may die after inserting a running row. Treat a 30-minute row as
-	// an expired lease before relying on the partial unique index.
+	// A process may die after inserting a running row. A full 19-model active
+	// round has a 45-minute service deadline, so only reclaim its lease after
+	// one hour before relying on the partial unique index.
 	if _, err := tx.ExecContext(ctx, `UPDATE upstream_price_monitor_runs
 		SET status='failed',finished_at=NOW(),error=CASE WHEN error='' THEN 'stale running lease recovered' ELSE error END
-		WHERE status='running' AND started_at < NOW() - INTERVAL '30 minutes'`); err != nil {
+		WHERE status='running' AND started_at < NOW() - INTERVAL '60 minutes'`); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM upstream_price_monitor_runs
@@ -167,6 +178,24 @@ func (r *upstreamPriceMonitorRepository) FinishRun(ctx context.Context, run *dom
 	}
 	rows, _ := result.RowsAffected()
 	if rows != 1 {
+		return service.ErrUpstreamPriceMonitorRunConflict
+	}
+	return nil
+}
+
+func (r *upstreamPriceMonitorRepository) UpdateRunProbeProgress(
+	ctx context.Context,
+	runID int64,
+	probedModels int,
+	probeCost float64,
+) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE upstream_price_monitor_runs
+		SET probed_models=$2,probe_cost=$3 WHERE id=$1 AND status='running'`,
+		runID, probedModels, probeCost)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
 		return service.ErrUpstreamPriceMonitorRunConflict
 	}
 	return nil
@@ -311,6 +340,14 @@ func (r *upstreamPriceMonitorRepository) GetRuntime(ctx context.Context) (*domai
 	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(COALESCE((remote_delta->>'actual_cost')::numeric,0)),0)
 		FROM upstream_price_monitor_evidence WHERE source='active_probe' AND created_at >= CURRENT_DATE`).Scan(&runtime.TodayProbeCost); err != nil {
 		return nil, err
+	}
+	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(probe_cost),0)
+		FROM upstream_price_monitor_runs WHERE status='running'`).Scan(&runtime.CurrentRunProbeCost); err != nil {
+		return nil, err
+	}
+	runtime.RemainingDailyProbeBudgetUSD = cfg.ActiveProbeDailyBudgetUSD - runtime.TodayProbeCost
+	if runtime.RemainingDailyProbeBudgetUSD < 0 {
+		runtime.RemainingDailyProbeBudgetUSD = 0
 	}
 	domesticModelKeys := make([]string, 0, len(cfg.DomesticModels))
 	for _, model := range cfg.DomesticModels {
@@ -507,15 +544,16 @@ func insertUpstreamPriceEvidence(ctx context.Context, tx *sql.Tx, evidence *doma
 	currentJSON, _ := json.Marshal(evidence.CurrentPrices)
 	suggestedJSON, _ := json.Marshal(evidence.SuggestedPrices)
 	displayCurrentJSON, _ := json.Marshal(evidence.DisplayPricesCurrent)
+	dimensionStatusesJSON, _ := json.Marshal(evidence.DimensionStatuses)
 	return tx.QueryRowContext(ctx, `INSERT INTO upstream_price_monitor_evidence
 		(run_id,account_id,model_name,billing_mode,status,source,reconciliation_status,context_key,observed_at,
 		 sample_count,local_delta,remote_delta,prices,current_prices,suggested_prices,display_prices_current,
-		 display_multiplier_current,display_multiplier_suggested,last_error)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		 display_multiplier_current,display_multiplier_suggested,dimension_statuses,last_error)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 		RETURNING id,created_at`, evidence.RunID, evidence.AccountID, evidence.ModelName, evidence.BillingMode,
 		evidence.Status, evidence.Source, evidence.ReconciliationStatus, evidence.ContextKey, evidence.ObservedAt,
 		evidence.SampleCount, localJSON, remoteJSON, pricesJSON, currentJSON, suggestedJSON, displayCurrentJSON,
-		evidence.DisplayMultiplierCurrent, evidence.DisplayMultiplierSuggested, evidence.LastError).
+		evidence.DisplayMultiplierCurrent, evidence.DisplayMultiplierSuggested, dimensionStatusesJSON, evidence.LastError).
 		Scan(&evidence.ID, &evidence.CreatedAt)
 }
 
@@ -601,7 +639,8 @@ func listUpstreamPriceEvidenceByRun(
 ) ([]domain.UpstreamPriceEvidence, error) {
 	rows, err := queryer.QueryContext(ctx, `SELECT id,run_id,account_id,model_name,billing_mode,status,source,
 		reconciliation_status,context_key,observed_at,sample_count,local_delta,remote_delta,prices,current_prices,
-		suggested_prices,display_prices_current,display_multiplier_current,display_multiplier_suggested,last_error,created_at
+		suggested_prices,display_prices_current,display_multiplier_current,display_multiplier_suggested,
+		dimension_statuses,last_error,created_at
 		FROM upstream_price_monitor_evidence WHERE run_id=$1 ORDER BY account_id,LOWER(model_name),context_key,id`, runID)
 	if err != nil {
 		return nil, err
@@ -610,13 +649,13 @@ func listUpstreamPriceEvidenceByRun(
 	var out []domain.UpstreamPriceEvidence
 	for rows.Next() {
 		var evidence domain.UpstreamPriceEvidence
-		var localJSON, remoteJSON, pricesJSON, currentJSON, suggestedJSON, displayCurrentJSON []byte
+		var localJSON, remoteJSON, pricesJSON, currentJSON, suggestedJSON, displayCurrentJSON, dimensionStatusesJSON []byte
 		var currentMultiplier, suggestedMultiplier sql.NullFloat64
 		if err := rows.Scan(&evidence.ID, &evidence.RunID, &evidence.AccountID, &evidence.ModelName,
 			&evidence.BillingMode, &evidence.Status, &evidence.Source, &evidence.ReconciliationStatus,
 			&evidence.ContextKey, &evidence.ObservedAt, &evidence.SampleCount, &localJSON, &remoteJSON,
 			&pricesJSON, &currentJSON, &suggestedJSON, &displayCurrentJSON, &currentMultiplier, &suggestedMultiplier,
-			&evidence.LastError, &evidence.CreatedAt); err != nil {
+			&dimensionStatusesJSON, &evidence.LastError, &evidence.CreatedAt); err != nil {
 			return nil, err
 		}
 		for _, target := range []struct {
@@ -624,7 +663,7 @@ func listUpstreamPriceEvidenceByRun(
 			value any
 		}{{localJSON, &evidence.LocalDelta}, {remoteJSON, &evidence.RemoteDelta}, {pricesJSON, &evidence.Prices},
 			{currentJSON, &evidence.CurrentPrices}, {suggestedJSON, &evidence.SuggestedPrices},
-			{displayCurrentJSON, &evidence.DisplayPricesCurrent}} {
+			{displayCurrentJSON, &evidence.DisplayPricesCurrent}, {dimensionStatusesJSON, &evidence.DimensionStatuses}} {
 			if len(target.raw) > 0 {
 				if err := json.Unmarshal(target.raw, target.value); err != nil {
 					return nil, err
