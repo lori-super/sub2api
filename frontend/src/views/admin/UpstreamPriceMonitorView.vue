@@ -56,7 +56,7 @@
 
       <template v-else>
         <section v-if="activeTab === 'overview'" class="space-y-5" data-testid="overview-panel">
-          <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
             <article class="monitor-stat-card">
               <span class="monitor-stat-label">{{ t('admin.upstreamPriceMonitor.runtime.status') }}</span>
               <span class="mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold" :class="runtimeStatusClass">
@@ -80,10 +80,17 @@
               <strong class="monitor-stat-value text-base">{{ formatTimestamp(runtime?.next_run_at, 'next') }}</strong>
             </article>
             <article class="monitor-stat-card">
-              <span class="monitor-stat-label">{{ t('admin.upstreamPriceMonitor.runtime.todayCost') }}</span>
-              <strong class="monitor-stat-value font-mono">{{ formatMoney(runtime?.today_probe_cost) }}</strong>
+              <span class="monitor-stat-label">{{ t('admin.upstreamPriceMonitor.runtime.runCost') }}</span>
+              <strong class="monitor-stat-value font-mono" data-testid="current-run-cost">{{ formatMoney(currentRunCost) }}</strong>
               <span class="mt-2 text-xs text-gray-400">
-                {{ t('admin.upstreamPriceMonitor.runtime.failures') }}: {{ runtime?.consecutive_failures || 0 }}
+                {{ t('admin.upstreamPriceMonitor.runtime.runBudget', { value: formatMoney(configDraft.active_probe_run_budget_usd) }) }}
+              </span>
+            </article>
+            <article class="monitor-stat-card">
+              <span class="monitor-stat-label">{{ t('admin.upstreamPriceMonitor.runtime.todayCost') }}</span>
+              <strong class="monitor-stat-value font-mono" data-testid="today-probe-cost">{{ formatMoney(runtime?.today_probe_cost) }}</strong>
+              <span class="mt-2 text-xs text-gray-400">
+                {{ t('admin.upstreamPriceMonitor.runtime.dailyBudget', { value: formatMoney(configDraft.active_probe_daily_budget_usd) }) }}
               </span>
             </article>
           </div>
@@ -151,7 +158,7 @@
             <p class="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-300">
               {{ t('admin.upstreamPriceMonitor.runtime.errorTitle') }}
             </p>
-            <p class="mt-1 break-words text-sm text-red-800 dark:text-red-200">{{ runtime.last_error }}</p>
+            <p class="mt-1 break-words text-sm text-red-800 dark:text-red-200">{{ localizedMonitorError(runtime.last_error) }}</p>
           </div>
 
           <article class="monitor-panel overflow-hidden">
@@ -203,7 +210,7 @@
                         </span>
                       </div>
                       <p class="mt-2 text-xs text-gray-500 dark:text-dark-400">{{ t('admin.upstreamPriceMonitor.overview.samples', { count: item.sample_count }) }}</p>
-                      <p v-if="item.last_error" class="mt-1 max-w-[240px] break-words text-xs text-red-500">{{ item.last_error }}</p>
+                      <p v-if="item.last_error" class="mt-1 max-w-[240px] break-words text-xs text-red-500">{{ localizedMonitorError(item.last_error) }}</p>
                     </td>
                     <td class="px-4 py-4">
                       <p class="text-xs font-semibold" :class="isEvidenceMismatch(item) ? 'text-red-600 dark:text-red-300' : 'text-emerald-600 dark:text-emerald-300'">
@@ -216,7 +223,16 @@
                     <td class="px-4 py-4">
                       <div class="grid min-w-[290px] gap-x-4 gap-y-1.5 text-xs" :class="item.billing_mode === 'per_request' ? 'grid-cols-3' : 'grid-cols-2'">
                         <div v-for="field in priceFields(item)" :key="field.key" class="flex items-center justify-between gap-2">
-                          <span class="text-gray-500 dark:text-dark-400">{{ field.label }}</span>
+                          <span class="flex items-center gap-1.5 text-gray-500 dark:text-dark-400">
+                            <span
+                              class="rounded px-1.5 py-0.5 text-[10px] font-semibold"
+                              :class="dimensionStatusClass(field.status)"
+                              :data-testid="`dimension-status-${item.model}-${field.key}`"
+                            >
+                              {{ dimensionStatusLabel(field.status) }}
+                            </span>
+                            {{ field.label }}
+                          </span>
                           <span class="whitespace-nowrap font-mono text-gray-800 dark:text-gray-100">
                             {{ formatPrice(field.current) }}
                             <span class="px-0.5 text-gray-300">→</span>
@@ -257,9 +273,37 @@
               </span>
             </div>
 
-            <div class="mt-5 flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200">
-              <Icon name="exclamationTriangle" size="sm" class="mt-0.5 shrink-0" />
-              {{ t('admin.upstreamPriceMonitor.config.exclusiveWarning') }}
+            <div class="mt-5 grid gap-3 lg:grid-cols-2">
+              <div
+                class="flex items-start gap-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 dark:border-blue-500/25 dark:bg-blue-500/10 dark:text-blue-200"
+                data-testid="active-only-notice"
+              >
+                <Icon name="bolt" size="sm" class="mt-0.5 shrink-0" />
+                <div class="min-w-0">
+                  <p class="font-semibold">{{ t('admin.upstreamPriceMonitor.config.activeOnly') }}</p>
+                  <p class="mt-1 text-xs leading-5">{{ t('admin.upstreamPriceMonitor.config.activeOnlyHint') }}</p>
+                </div>
+              </div>
+              <div
+                class="flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-200"
+                data-testid="change-only-notice"
+              >
+                <Icon name="bell" size="sm" class="mt-0.5 shrink-0" />
+                <div class="min-w-0">
+                  <p class="font-semibold">{{ t('admin.upstreamPriceMonitor.config.changeOnlyNotify') }}</p>
+                  <p class="mt-1 text-xs leading-5">{{ t('admin.upstreamPriceMonitor.config.changeOnlyNotifyHint') }}</p>
+                </div>
+              </div>
+              <div
+                class="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200 lg:col-span-2"
+                data-testid="exclusive-key-warning"
+              >
+                <Icon name="exclamationTriangle" size="sm" class="mt-0.5 shrink-0" />
+                <div>
+                  <p class="font-semibold">{{ t('admin.upstreamPriceMonitor.config.exclusiveTitle') }}</p>
+                  <p class="mt-1 text-xs leading-5">{{ t('admin.upstreamPriceMonitor.config.exclusiveWarning') }}</p>
+                </div>
+              </div>
             </div>
 
             <form class="mt-6 space-y-7" @submit.prevent="saveConfig">
@@ -271,39 +315,58 @@
                   </div>
                   <Toggle v-model="configDraft.enabled" data-testid="config-enabled" />
                 </div>
-                <div class="config-toggle-row">
+                <div class="config-toggle-row" data-testid="active-probe-fixed">
                   <div>
-                    <p class="config-label">{{ t('admin.upstreamPriceMonitor.config.activeProbe') }}</p>
-                    <p class="config-hint">{{ t('admin.upstreamPriceMonitor.config.activeProbeHint') }}</p>
+                    <p class="config-label">{{ t('admin.upstreamPriceMonitor.config.probeStrategy') }}</p>
+                    <p class="config-hint">{{ t('admin.upstreamPriceMonitor.config.probeStrategyHint') }}</p>
                   </div>
-                  <Toggle v-model="configDraft.active_probe_enabled" data-testid="config-active-probe" />
+                  <span class="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-500/15 dark:text-blue-300">
+                    {{ t('admin.upstreamPriceMonitor.config.fixed') }}
+                  </span>
                 </div>
               </div>
 
               <div class="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
                 <label class="form-field">
                   <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.mode') }}</span>
-                  <select v-model="configDraft.mode" class="input mt-1.5" data-testid="config-mode">
-                    <option value="observe">{{ t('admin.upstreamPriceMonitor.mode.observe') }}</option>
+                  <select v-model="configDraft.mode" disabled class="input mt-1.5 bg-gray-50 dark:bg-dark-900/30" data-testid="config-mode">
                     <option value="auto_apply">{{ t('admin.upstreamPriceMonitor.mode.auto_apply') }}</option>
                   </select>
+                  <span class="config-hint mt-1">{{ t('admin.upstreamPriceMonitor.config.modeHint') }}</span>
                 </label>
                 <label class="form-field">
                   <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.interval') }}</span>
-                  <input v-model.number="configDraft.interval_minutes" type="number" min="5" step="1" class="input mt-1.5 font-mono" data-testid="config-interval" />
+                  <input v-model.number="configDraft.interval_minutes" type="number" min="1440" max="1440" step="1440" readonly class="input mt-1.5 bg-gray-50 font-mono dark:bg-dark-900/30" data-testid="config-interval" />
+                  <span class="config-hint mt-1">{{ t('admin.upstreamPriceMonitor.config.intervalHint') }}</span>
                 </label>
                 <label class="form-field">
                   <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.markup') }}</span>
-                  <input v-model.number="configDraft.markup" type="number" min="1" step="0.01" class="input mt-1.5 font-mono" data-testid="config-markup" />
+                  <input v-model.number="configDraft.markup" type="number" min="1.2" max="1.2" step="0.01" readonly class="input mt-1.5 bg-gray-50 font-mono dark:bg-dark-900/30" data-testid="config-markup" />
                   <span class="config-hint mt-1">{{ t('admin.upstreamPriceMonitor.config.markupHint') }}</span>
                 </label>
                 <label class="form-field">
                   <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.decimals') }}</span>
                   <input v-model.number="configDraft.display_multiplier_decimals" type="number" min="0" max="6" step="1" class="input mt-1.5 font-mono" data-testid="config-decimals" />
                 </label>
-                <label class="form-field sm:col-span-2 xl:col-span-1">
-                  <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.sampleAge') }}</span>
-                  <input v-model.number="configDraft.passive_sample_max_age_minutes" type="number" min="15" step="15" class="input mt-1.5 font-mono" data-testid="config-sample-age" />
+                <label class="form-field">
+                  <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.maxModelsPerRun') }}</span>
+                  <input v-model.number="configDraft.active_probe_max_models_per_run" type="number" min="1" max="19" step="1" class="input mt-1.5 font-mono" data-testid="config-max-models" />
+                  <span class="config-hint mt-1">{{ t('admin.upstreamPriceMonitor.config.maxModelsPerRunHint') }}</span>
+                </label>
+                <label class="form-field">
+                  <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.maxRequestsPerModel') }}</span>
+                  <input v-model.number="configDraft.active_probe_max_requests_per_model" type="number" min="1" max="7" step="1" class="input mt-1.5 font-mono" data-testid="config-max-requests" />
+                  <span class="config-hint mt-1">{{ t('admin.upstreamPriceMonitor.config.maxRequestsPerModelHint') }}</span>
+                </label>
+                <label class="form-field">
+                  <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.runBudget') }}</span>
+                  <input v-model.number="configDraft.active_probe_run_budget_usd" type="number" min="0.01" max="0.15" step="0.01" class="input mt-1.5 font-mono" data-testid="config-run-budget" />
+                  <span class="config-hint mt-1">{{ t('admin.upstreamPriceMonitor.config.runBudgetHint') }}</span>
+                </label>
+                <label class="form-field">
+                  <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.dailyBudget') }}</span>
+                  <input v-model.number="configDraft.active_probe_daily_budget_usd" type="number" min="0.01" max="0.20" step="0.01" class="input mt-1.5 font-mono" data-testid="config-daily-budget" />
+                  <span class="config-hint mt-1">{{ t('admin.upstreamPriceMonitor.config.dailyBudgetHint') }}</span>
                 </label>
               </div>
 
@@ -465,7 +528,7 @@
                         {{ t('admin.upstreamPriceMonitor.history.matched', { count: run.matched_models }) }} ·
                         {{ t('admin.upstreamPriceMonitor.history.mismatched', { count: run.mismatched_models }) }}
                       </p>
-                      <p v-if="run.error" class="mt-1 max-w-[260px] break-words text-xs text-red-500">{{ run.error }}</p>
+                       <p v-if="run.error" class="mt-1 max-w-[260px] break-words text-xs text-red-500">{{ localizedMonitorError(run.error) }}</p>
                     </td>
                     <td class="px-4 py-4 font-mono text-xs text-gray-700 dark:text-dark-200">{{ formatMoney(run.probe_cost) }}</td>
                     <td class="px-4 py-4">
@@ -527,6 +590,8 @@ import accountsAPI from '@/api/admin/accounts'
 import channelsAPI from '@/api/admin/channels'
 import upstreamPriceMonitorAPI, {
   type UpstreamPriceEvidence,
+  type UpstreamPriceDimension,
+  type UpstreamPriceDimensionStatus,
   type UpstreamPriceEvidenceStatus,
   type UpstreamPriceMonitorConfig,
   type UpstreamPriceMonitorRun,
@@ -546,16 +611,21 @@ type PendingRunAction = { type: 'apply' | 'rollback'; run: UpstreamPriceMonitorR
 
 const defaultConfig = (): UpstreamPriceMonitorConfig => ({
   enabled: false,
-  mode: 'observe',
-  interval_minutes: 15,
+  mode: 'auto_apply',
+  interval_minutes: 1440,
   markup: 1.2,
   display_multiplier_decimals: 3,
   account_ids: [],
   channel_ids: [],
   domestic_models: [],
   per_request_models: [],
-  passive_sample_max_age_minutes: 60,
-  active_probe_enabled: false,
+  passive_sample_max_age_minutes: 1440,
+  active_probe_enabled: true,
+  active_only: true,
+  active_probe_max_models_per_run: 19,
+  active_probe_max_requests_per_model: 7,
+  active_probe_run_budget_usd: 0.15,
+  active_probe_daily_budget_usd: 0.20,
 })
 
 const { t } = useI18n()
@@ -600,6 +670,14 @@ const tabs = computed(() => [
 ])
 const evidenceStatuses: UpstreamPriceEvidenceStatus[] = ['trusted', 'pending', 'mismatch', 'stale', 'unobservable']
 const runStatuses: UpstreamPriceRunStatus[] = ['running', 'completed', 'partial', 'failed']
+const knownStatuses = new Set(['idle', 'running', 'degraded', 'failed', 'disabled', 'completed', 'partial', ...evidenceStatuses])
+const knownModes = new Set(['observe', 'auto_apply', 'dry_run'])
+const knownTriggers = new Set(['manual', 'scheduled', 'active_probe'])
+const knownSources = new Set(['user_request', 'active_probe', 'price_page'])
+const knownReconciliationStatuses = new Set([
+  'baseline', 'matched', 'no_activity', 'mismatch', 'remote_reset', 'mixed_context',
+  'closed', 'open', 'external_traffic',
+])
 
 function normalizedModels(): string[] {
   return Array.from(new Set(modelsText.value.split(/\r?\n|,/).map(value => value.trim()).filter(Boolean)))
@@ -612,6 +690,11 @@ function normalizedPerRequestModels(): string[] {
 function configPayload(): UpstreamPriceMonitorConfig {
   return {
     ...configDraft,
+    active_only: true,
+    active_probe_enabled: true,
+    mode: 'auto_apply',
+    interval_minutes: 1440,
+    markup: 1.2,
     account_ids: [...configDraft.account_ids].map(Number).filter(Number.isFinite).sort((a, b) => a - b),
     channel_ids: [...configDraft.channel_ids].map(Number).filter(Number.isFinite).sort((a, b) => a - b),
     domestic_models: normalizedModels().sort((a, b) => a.localeCompare(b)),
@@ -637,6 +720,12 @@ const coveragePercent = computed(() => {
 })
 const coverageText = computed(() => `${runtime.value?.coverage?.trusted || 0} / ${runtime.value?.coverage?.total || 0}`)
 const runtimeStatusClass = computed(() => runStatusClass(runtime.value?.status || 'disabled'))
+const currentRunCost = computed(() => {
+  if (Number.isFinite(runtime.value?.current_run_probe_cost)) return runtime.value?.current_run_probe_cost || 0
+  const currentRunID = runtime.value?.current_run_id
+  const current = currentRunID ? runs.value.find(run => run.id === currentRunID) : runs.value.find(run => run.status === 'running')
+  return current?.probe_cost || 0
+})
 const filteredEvidence = computed(() => {
   const needle = evidenceSearch.value.toLowerCase()
   return evidence.value.filter(item => {
@@ -659,6 +748,11 @@ const latestRollbackRun = computed(() => runs.value.find(canRollback) || null)
 function assignConfig(config: UpstreamPriceMonitorConfig): void {
   const normalized = { ...defaultConfig(), ...config }
   Object.assign(configDraft, normalized, {
+    active_only: true,
+    active_probe_enabled: true,
+    mode: 'auto_apply',
+    interval_minutes: 1440,
+    markup: 1.2,
     account_ids: [...(normalized.account_ids || [])],
     channel_ids: [...(normalized.channel_ids || [])],
 		domestic_models: [...(normalized.domestic_models || [])],
@@ -678,7 +772,7 @@ async function loadOptions(): Promise<void> {
     accountOptions.value = accounts.items || []
     channelOptions.value = channels.items || []
   } catch (error) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.upstreamPriceMonitor.messages.optionsFailed')))
+    appStore.showError(localizedApiError(error, t('admin.upstreamPriceMonitor.messages.optionsFailed')))
   }
 }
 
@@ -705,7 +799,7 @@ async function loadInitial(): Promise<void> {
     void loadOptions()
   } catch (error) {
     if ((error as { name?: string; code?: string })?.name === 'AbortError' || (error as { code?: string })?.code === 'ERR_CANCELED') return
-    appStore.showError(extractApiErrorMessage(error, t('admin.upstreamPriceMonitor.messages.loadFailed')))
+    appStore.showError(localizedApiError(error, t('admin.upstreamPriceMonitor.messages.loadFailed')))
   } finally {
     if (loadController === controller) {
       initialLoading.value = false
@@ -756,7 +850,7 @@ async function refreshCurrentTab(): Promise<void> {
       await refreshOverview()
     } else await refreshOverview()
   } catch (error) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.upstreamPriceMonitor.messages.loadFailed')))
+    appStore.showError(localizedApiError(error, t('admin.upstreamPriceMonitor.messages.loadFailed')))
   } finally {
     refreshing.value = false
   }
@@ -772,18 +866,22 @@ async function handleRunNow(): Promise<void> {
     appStore.showSuccess(t('admin.upstreamPriceMonitor.messages.runCreated'))
     ensurePolling()
   } catch (error) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.upstreamPriceMonitor.messages.runFailed')))
+    appStore.showError(localizedApiError(error, t('admin.upstreamPriceMonitor.messages.runFailed')))
   } finally {
     creatingRun.value = false
   }
 }
 
 function validateConfig(): string {
-  if (!Number.isInteger(configDraft.interval_minutes) || configDraft.interval_minutes < 5) return t('admin.upstreamPriceMonitor.config.validationInterval')
-  if (configDraft.active_probe_enabled && configDraft.interval_minutes < 15) return t('admin.upstreamPriceMonitor.config.validationActiveInterval')
-  if (!Number.isFinite(configDraft.markup) || configDraft.markup < 1) return t('admin.upstreamPriceMonitor.config.validationMarkup')
+  if (configDraft.interval_minutes !== 1440) return t('admin.upstreamPriceMonitor.config.validationInterval')
+  if (configDraft.markup !== 1.2) return t('admin.upstreamPriceMonitor.config.validationMarkup')
   if (!Number.isInteger(configDraft.display_multiplier_decimals) || configDraft.display_multiplier_decimals < 0 || configDraft.display_multiplier_decimals > 6) return t('admin.upstreamPriceMonitor.config.validationDecimals')
-  if (configDraft.enabled && configPayload().account_ids.length === 0) return t('admin.upstreamPriceMonitor.config.validationAccounts')
+  if (!Number.isInteger(configDraft.active_probe_max_models_per_run) || configDraft.active_probe_max_models_per_run < 1 || configDraft.active_probe_max_models_per_run > 19) return t('admin.upstreamPriceMonitor.config.validationMaxModels')
+  if (!Number.isInteger(configDraft.active_probe_max_requests_per_model) || configDraft.active_probe_max_requests_per_model < 1 || configDraft.active_probe_max_requests_per_model > 7) return t('admin.upstreamPriceMonitor.config.validationMaxRequests')
+  if (!Number.isFinite(configDraft.active_probe_run_budget_usd) || configDraft.active_probe_run_budget_usd <= 0 || configDraft.active_probe_run_budget_usd > 0.15) return t('admin.upstreamPriceMonitor.config.validationRunBudget')
+  if (!Number.isFinite(configDraft.active_probe_daily_budget_usd) || configDraft.active_probe_daily_budget_usd <= 0 || configDraft.active_probe_daily_budget_usd > 0.20) return t('admin.upstreamPriceMonitor.config.validationDailyBudget')
+  if (configDraft.active_probe_daily_budget_usd < configDraft.active_probe_run_budget_usd) return t('admin.upstreamPriceMonitor.config.validationBudgetOrder')
+  if (configPayload().account_ids.length !== 1) return t('admin.upstreamPriceMonitor.config.validationSingleAccount')
   if (configDraft.enabled && configPayload().channel_ids.length === 0) return t('admin.upstreamPriceMonitor.config.validationChannels')
   if (configDraft.enabled && configPayload().domestic_models.length === 0) return t('admin.upstreamPriceMonitor.config.validationModels')
   return ''
@@ -799,7 +897,7 @@ async function saveConfig(): Promise<void> {
     appStore.showSuccess(t('admin.upstreamPriceMonitor.config.saved'))
   } catch (error) {
     if (isStepUpCancelled(error)) return
-    appStore.showError(extractApiErrorMessage(error, t('admin.upstreamPriceMonitor.messages.saveFailed')))
+    appStore.showError(localizedApiError(error, t('admin.upstreamPriceMonitor.messages.saveFailed')))
   } finally {
     savingConfig.value = false
   }
@@ -812,7 +910,7 @@ async function updateModelStatus(model: string, status: UpstreamPriceModelStatus
     await refreshModelCatalog()
     appStore.showSuccess(t('admin.upstreamPriceMonitor.config.modelUpdated'))
   } catch (error) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.upstreamPriceMonitor.messages.modelUpdateFailed')))
+    appStore.showError(localizedApiError(error, t('admin.upstreamPriceMonitor.messages.modelUpdateFailed')))
   } finally {
     updatingModel.value = ''
   }
@@ -827,7 +925,7 @@ async function discoverModels(): Promise<void> {
     assignConfig(config)
     appStore.showSuccess(t('admin.upstreamPriceMonitor.config.modelsDiscovered'))
   } catch (error) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.upstreamPriceMonitor.messages.modelDiscoveryFailed')))
+    appStore.showError(localizedApiError(error, t('admin.upstreamPriceMonitor.messages.modelDiscoveryFailed')))
   } finally {
     discoveringModels.value = false
   }
@@ -857,7 +955,7 @@ async function confirmRunAction(): Promise<void> {
     const fallback = action.type === 'rollback'
       ? t('admin.upstreamPriceMonitor.messages.rollbackFailed')
       : t('admin.upstreamPriceMonitor.messages.applyFailed')
-    appStore.showError(extractApiErrorMessage(error, fallback))
+    appStore.showError(localizedApiError(error, fallback))
   }
 }
 
@@ -886,22 +984,27 @@ function handleRunsPageSize(pageSize: number): void {
 }
 
 function statusLabel(status: string): string {
-  const translated = t(`admin.upstreamPriceMonitor.status.${status}`)
-  return translated === `admin.upstreamPriceMonitor.status.${status}` ? status : translated
+  return knownStatuses.has(status)
+    ? t(`admin.upstreamPriceMonitor.status.${status}`)
+    : t('admin.upstreamPriceMonitor.status.unknown')
 }
 
 function modeLabel(mode: string): string {
-  const translated = t(`admin.upstreamPriceMonitor.mode.${mode}`)
-  return translated === `admin.upstreamPriceMonitor.mode.${mode}` ? mode : translated
+  return knownModes.has(mode)
+    ? t(`admin.upstreamPriceMonitor.mode.${mode}`)
+    : t('admin.upstreamPriceMonitor.mode.unknown')
 }
 
 function triggerLabel(trigger: string): string {
-  const translated = t(`admin.upstreamPriceMonitor.history.${trigger}`)
-  return translated === `admin.upstreamPriceMonitor.history.${trigger}` ? trigger : translated
+  return knownTriggers.has(trigger)
+    ? t(`admin.upstreamPriceMonitor.history.${trigger}`)
+    : t('admin.upstreamPriceMonitor.history.unknownTrigger')
 }
 
 function sourceLabel(source: string): string {
-  return t(`admin.upstreamPriceMonitor.source.${source}`)
+  return knownSources.has(source)
+    ? t(`admin.upstreamPriceMonitor.source.${source}`)
+    : t('admin.upstreamPriceMonitor.source.unknown')
 }
 
 function runStatusClass(status: string): string {
@@ -924,7 +1027,11 @@ function isEvidenceMismatch(item: UpstreamPriceEvidence): boolean {
 }
 
 function reconciliationLabel(item: UpstreamPriceEvidence): string {
-  if (item.reconciliation_status) return item.reconciliation_status
+  if (item.reconciliation_status) {
+    return knownReconciliationStatuses.has(item.reconciliation_status)
+      ? t(`admin.upstreamPriceMonitor.reconciliation.${item.reconciliation_status}`)
+      : t('admin.upstreamPriceMonitor.reconciliation.unknown')
+  }
   return statusLabel(item.status === 'trusted' ? 'trusted' : item.status)
 }
 
@@ -942,22 +1049,72 @@ function evidenceObservedPrices(item: UpstreamPriceEvidence) {
   return item.prices || {}
 }
 
-function priceFields(item: UpstreamPriceEvidence): Array<{ key: string; label: string; current?: number | null; suggested?: number | null }> {
+interface PriceField {
+  key: UpstreamPriceDimension
+  label: string
+  current?: number | null
+  suggested?: number | null
+  status: UpstreamPriceDimensionStatus
+}
+
+function resolvedDimensionStatus(
+  item: UpstreamPriceEvidence,
+  key: UpstreamPriceDimension,
+  observed?: number | null,
+): UpstreamPriceDimensionStatus {
+  const explicit = item.dimension_statuses?.[key]
+  if (explicit) return explicit
+  if (observed !== null && observed !== undefined && Number.isFinite(observed)) return 'observed'
+  if (item.status === 'pending') return 'pending'
+  return 'unobserved'
+}
+
+function priceFields(item: UpstreamPriceEvidence): PriceField[] {
   const current = item.current_prices || evidenceObservedPrices(item)
   const suggested = item.suggested_prices || {}
+  const observed = evidenceObservedPrices(item)
   if (item.billing_mode === 'per_request') {
     return [
-      { key: 'low', label: t('admin.upstreamPriceMonitor.overview.priceRequestLow'), current: current.per_request_lte_256k, suggested: suggested.per_request_lte_256k },
-      { key: 'medium', label: t('admin.upstreamPriceMonitor.overview.priceRequestMedium'), current: current.per_request_256k_512k, suggested: suggested.per_request_256k_512k },
-      { key: 'high', label: t('admin.upstreamPriceMonitor.overview.priceRequestHigh'), current: current.per_request_gt_512k, suggested: suggested.per_request_gt_512k },
+      { key: 'per_request_lte_256k', label: t('admin.upstreamPriceMonitor.overview.priceRequestLow'), current: current.per_request_lte_256k, suggested: suggested.per_request_lte_256k, status: resolvedDimensionStatus(item, 'per_request_lte_256k', observed.per_request_lte_256k) },
+      { key: 'per_request_256k_512k', label: t('admin.upstreamPriceMonitor.overview.priceRequestMedium'), current: current.per_request_256k_512k, suggested: suggested.per_request_256k_512k, status: resolvedDimensionStatus(item, 'per_request_256k_512k', observed.per_request_256k_512k) },
+      { key: 'per_request_gt_512k', label: t('admin.upstreamPriceMonitor.overview.priceRequestHigh'), current: current.per_request_gt_512k, suggested: suggested.per_request_gt_512k, status: resolvedDimensionStatus(item, 'per_request_gt_512k', observed.per_request_gt_512k) },
     ]
   }
   return [
-    { key: 'input', label: t('admin.upstreamPriceMonitor.overview.priceInput'), current: current.input_per_million, suggested: suggested.input_per_million },
-    { key: 'output', label: t('admin.upstreamPriceMonitor.overview.priceOutput'), current: current.output_per_million, suggested: suggested.output_per_million },
-    { key: 'cache_write', label: t('admin.upstreamPriceMonitor.overview.priceCacheWrite'), current: current.cache_write_per_million, suggested: suggested.cache_write_per_million },
-    { key: 'cache_read', label: t('admin.upstreamPriceMonitor.overview.priceCacheRead'), current: current.cache_read_per_million, suggested: suggested.cache_read_per_million },
+    { key: 'fixed_per_request', label: t('admin.upstreamPriceMonitor.overview.priceFixedRequest'), current: current.fixed_per_request, suggested: suggested.fixed_per_request, status: resolvedDimensionStatus(item, 'fixed_per_request', observed.fixed_per_request) },
+    { key: 'input', label: t('admin.upstreamPriceMonitor.overview.priceInput'), current: current.input_per_million, suggested: suggested.input_per_million, status: resolvedDimensionStatus(item, 'input', observed.input_per_million) },
+    { key: 'output', label: t('admin.upstreamPriceMonitor.overview.priceOutput'), current: current.output_per_million, suggested: suggested.output_per_million, status: resolvedDimensionStatus(item, 'output', observed.output_per_million) },
+    { key: 'cache_write', label: t('admin.upstreamPriceMonitor.overview.priceCacheWrite'), current: current.cache_write_per_million, suggested: suggested.cache_write_per_million, status: resolvedDimensionStatus(item, 'cache_write', observed.cache_write_per_million) },
+    { key: 'cache_read', label: t('admin.upstreamPriceMonitor.overview.priceCacheRead'), current: current.cache_read_per_million, suggested: suggested.cache_read_per_million, status: resolvedDimensionStatus(item, 'cache_read', observed.cache_read_per_million) },
   ]
+}
+
+function dimensionStatusLabel(status: UpstreamPriceDimensionStatus): string {
+  return t(`admin.upstreamPriceMonitor.dimension.${status}`)
+}
+
+function dimensionStatusClass(status: UpstreamPriceDimensionStatus): string {
+  if (status === 'observed') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
+  if (status === 'pending') return 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300'
+  if (status === 'failed') return 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300'
+  return 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-dark-300'
+}
+
+function localizedMonitorError(value?: string | null): string {
+  const error = (value || '').toLowerCase()
+  if (/budget|cost limit|spend limit/.test(error)) return t('admin.upstreamPriceMonitor.error.budget')
+  if (/timeout|deadline|timed out|cancel/.test(error)) return t('admin.upstreamPriceMonitor.error.timeout')
+  if (/429|rate.?limit|too many request/.test(error)) return t('admin.upstreamPriceMonitor.error.rateLimit')
+  if (/401|403|unauthor|forbidden|invalid.*key|api.?key/.test(error)) return t('admin.upstreamPriceMonitor.error.credential')
+  if (/external.?traffic|ledger|reconcil|mismatch|mixed.?context/.test(error)) return t('admin.upstreamPriceMonitor.error.contaminated')
+  if (/upstream|bad gateway|502|503|504/.test(error)) return t('admin.upstreamPriceMonitor.error.upstream')
+  return t('admin.upstreamPriceMonitor.error.generic')
+}
+
+function localizedApiError(error: unknown, fallback: string): string {
+  const message = extractApiErrorMessage(error, fallback)
+  if (message === fallback || /[\u3400-\u9fff]/.test(message)) return message
+  return localizedMonitorError(message)
 }
 
 function formatPrice(value?: number | null): string {

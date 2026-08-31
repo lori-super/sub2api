@@ -40,6 +40,8 @@ const (
 
 var upstreamPriceProbeLedgerPollInterval = 1500 * time.Millisecond
 
+const upstreamPriceRequiredMarkup = 1.20
+
 var (
 	ErrUpstreamPriceMonitorUnavailable = infraerrors.ServiceUnavailable(
 		"UPSTREAM_PRICE_MONITOR_UNAVAILABLE", "upstream price monitor is unavailable",
@@ -73,6 +75,7 @@ type UpstreamPriceMonitorRepository interface {
 	UpdateConfig(context.Context, *domain.UpstreamPriceMonitorConfig) error
 	GetRuntime(context.Context) (*domain.UpstreamPriceMonitorRuntime, error)
 	CreateRun(context.Context, *domain.UpstreamPriceMonitorRun) error
+	UpdateRunProbeProgress(context.Context, int64, int, float64) error
 	FinishRun(context.Context, *domain.UpstreamPriceMonitorRun) error
 	GetRun(context.Context, int64) (*domain.UpstreamPriceMonitorRun, error)
 	ListRuns(context.Context, int, int, ...domain.UpstreamPriceMonitorRunStatus) (*domain.UpstreamPriceMonitorRunPage, error)
@@ -417,6 +420,11 @@ func (s *UpstreamPriceMonitorService) notifyRun(
 	modelsByName := make(map[string]UpstreamPriceMonitorNotificationModel)
 	if evidence, err := s.ListRunEvidence(context.WithoutCancel(ctx), run.ID); err == nil {
 		for _, item := range evidence {
+			if item.Source != domain.UpstreamPriceEvidenceSourceActiveProbe ||
+				item.BillingMode != DisplayBillingModeToken ||
+				item.Status != domain.UpstreamPriceEvidenceStatusTrusted {
+				continue
+			}
 			if upstreamPriceNotificationVectorEmpty(item.Prices) && upstreamPriceNotificationVectorEmpty(item.SuggestedPrices) {
 				continue
 			}
@@ -442,13 +450,15 @@ func (s *UpstreamPriceMonitorService) notifyRun(
 	if run.FinishedAt != nil {
 		occurredAt = run.FinishedAt.UTC()
 	}
+	appliedModels, _ := upstreamPriceSummaryInt(run.Summary["applied_models"])
 	s.notifier.Notify(ctx, UpstreamPriceMonitorNotificationPayload{
-		RunID: run.ID, Action: action, Models: models, OccurredAt: occurredAt, Error: errorMessage,
+		RunID: run.ID, Action: action, Models: models, AppliedModels: appliedModels,
+		OccurredAt: occurredAt, Error: errorMessage,
 	})
 }
 
 func upstreamPriceNotificationVectorEmpty(value domain.UpstreamPriceVector) bool {
-	return value.InputPerMillion == nil && value.OutputPerMillion == nil &&
+	return value.FixedPerRequest == nil && value.InputPerMillion == nil && value.OutputPerMillion == nil &&
 		value.CacheWritePerMillion == nil && value.CacheReadPerMillion == nil &&
 		value.PerRequestLTE256K == nil && value.PerRequest256K512K == nil && value.PerRequestGT512K == nil
 }
@@ -463,12 +473,20 @@ func normalizeAndValidateUpstreamPriceMonitorConfig(cfg *domain.UpstreamPriceMon
 	if cfg.Mode != domain.UpstreamPriceMonitorModeObserve && cfg.Mode != domain.UpstreamPriceMonitorModeAutoApply {
 		return ErrUpstreamPriceMonitorInvalidConfig
 	}
-	if cfg.IntervalMinutes < 5 || cfg.IntervalMinutes > 1440 || cfg.Markup < 1 || cfg.Markup > 100 ||
+	if cfg.IntervalMinutes != 1440 || math.Abs(cfg.Markup-upstreamPriceRequiredMarkup) > 1e-12 ||
 		math.IsNaN(cfg.Markup) || math.IsInf(cfg.Markup, 0) || cfg.DisplayMultiplierDecimals < 0 ||
 		cfg.DisplayMultiplierDecimals > 6 || cfg.PassiveSampleMaxAgeMinutes < 15 || cfg.PassiveSampleMaxAgeMinutes > 10080 {
 		return ErrUpstreamPriceMonitorInvalidConfig
 	}
-	if cfg.ActiveProbeEnabled && cfg.IntervalMinutes < 15 {
+	if !cfg.ActiveOnly || cfg.ActiveProbeMaxRequests < 1 || cfg.ActiveProbeMaxRequests > 7 ||
+		cfg.ActiveProbeMaxModels < 1 || cfg.ActiveProbeMaxModels > len(domain.DefaultX5M5XDomesticModels) ||
+		!validPositiveProbeBudget(cfg.ActiveProbeRunBudgetUSD) ||
+		!validPositiveProbeBudget(cfg.ActiveProbeDailyBudgetUSD) ||
+		cfg.ActiveProbeRunBudgetUSD > 0.15 || cfg.ActiveProbeDailyBudgetUSD > 0.20 ||
+		cfg.ActiveProbeRunBudgetUSD > cfg.ActiveProbeDailyBudgetUSD {
+		return ErrUpstreamPriceMonitorInvalidConfig
+	}
+	if cfg.Enabled && !cfg.ActiveProbeEnabled {
 		return ErrUpstreamPriceMonitorInvalidConfig
 	}
 	cfg.AccountIDs = uniquePositiveInt64s(cfg.AccountIDs)
@@ -482,12 +500,19 @@ func normalizeAndValidateUpstreamPriceMonitorConfig(cfg *domain.UpstreamPriceMon
 		return err
 	}
 	cfg.DomesticModels = models
-	requestModels, err := normalizeDomesticModelAllowlist(cfg.PerRequestModels)
+	if cfg.ActiveProbeEnabled && len(cfg.DomesticModels) > 0 && len(cfg.AccountIDs) != 1 {
+		return ErrUpstreamPriceMonitorInvalidConfig
+	}
+	requestModels, err := normalizePerRequestModelAllowlist(cfg.PerRequestModels)
 	if err != nil {
 		return err
 	}
 	cfg.PerRequestModels = requestModels
 	return nil
+}
+
+func validPositiveProbeBudget(value float64) bool {
+	return value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func uniquePositiveInt64s(values []int64) []int64 {
@@ -520,15 +545,36 @@ func normalizeDomesticModelAllowlist(models []string) ([]string, error) {
 			return nil, ErrUpstreamPriceMonitorInvalidConfig
 		}
 		canonical := trimmed
-		if known, ok := allowed[strings.ToLower(trimmed)]; ok {
-			canonical = known
+		known, ok := allowed[strings.ToLower(trimmed)]
+		if !ok {
+			return nil, ErrUpstreamPriceMonitorInvalidConfig
 		}
+		canonical = known
 		key := strings.ToLower(canonical)
 		if _, exists := seen[key]; exists {
 			continue
 		}
 		seen[key] = struct{}{}
 		out = append(out, canonical)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return strings.ToLower(out[i]) < strings.ToLower(out[j]) })
+	return out, nil
+}
+
+func normalizePerRequestModelAllowlist(models []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(models))
+	out := make([]string, 0, len(models))
+	for _, raw := range models {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || len(trimmed) > 255 || strings.ContainsAny(trimmed, " \t\r\n,") {
+			return nil, ErrUpstreamPriceMonitorInvalidConfig
+		}
+		key := strings.ToLower(trimmed)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return strings.ToLower(out[i]) < strings.ToLower(out[j]) })
 	return out, nil
@@ -755,7 +801,7 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 	}
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
-	ctx, cancelRun := context.WithTimeout(ctx, 20*time.Minute)
+	ctx, cancelRun := context.WithTimeout(ctx, 45*time.Minute)
 	defer cancelRun()
 
 	cfg, err := s.repo.GetConfig(ctx)
@@ -774,7 +820,7 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 	if err := normalizeAndValidateUpstreamPriceMonitorConfig(cfg); err != nil {
 		return nil, err
 	}
-	if cfg.ActiveProbeEnabled && s.prober == nil {
+	if !cfg.ActiveProbeEnabled || s.prober == nil {
 		return nil, ErrUpstreamPriceMonitorInvalidConfig
 	}
 	run := &domain.UpstreamPriceMonitorRun{
@@ -821,127 +867,80 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 	if modelCatalogRevision <= 0 {
 		runErrors = append(runErrors, "model catalogue has no scan revision")
 	}
-	type accountRunResult struct {
-		matched, mismatched, probed int
-		probeCost                   float64
-		errors                      []string
+	// Token monitoring is deliberately pure-active. Production/user requests
+	// are inspected only as contamination signals around a synthetic sample;
+	// they are never fed into the price solver. The public price-page pipeline
+	// is intentionally not called from this run.
+	runtime, runtimeErr := s.repo.GetRuntime(ctx)
+	dailyCostBeforeRun := cfg.ActiveProbeDailyBudgetUSD
+	if runtimeErr != nil {
+		runErrors = append(runErrors, "read active probe budget: "+runtimeErr.Error())
+	} else {
+		dailyCostBeforeRun = runtime.TodayProbeCost
 	}
-	processAccount := func(accountID int64) accountRunResult {
-		result := accountRunResult{}
+	budget := newUpstreamPriceProbeBudget(cfg, dailyCostBeforeRun)
+	assignments, unavailableModels := assignUpstreamPriceProbeModels(
+		cfg.AccountIDs, cfg.DomesticModels, modelAvailability, cfg.ActiveProbeMaxModels,
+	)
+	expectedProbeModels := 0
+	for _, models := range assignments {
+		expectedProbeModels += len(models)
+	}
+	expectedProbeModels += len(unavailableModels)
+	for _, accountID := range cfg.AccountIDs {
+		models := assignments[accountID]
+		if len(models) == 0 {
+			continue
+		}
 		account := loadedAccounts[accountID]
 		if account == nil {
-			result.errors = append(result.errors, fmt.Sprintf("account %d: validated account snapshot is unavailable", accountID))
-			return result
-		}
-		accountCfg := *cfg
-		availableModels, availabilityKnown := modelAvailability[accountID]
-		accountCfg.DomesticModels = intersectUpstreamPriceModels(cfg.DomesticModels, availableModels)
-		usage, fetchErr := s.remote.FetchUsage(ctx, account)
-		if fetchErr != nil {
-			result.errors = append(result.errors, fmt.Sprintf("account %d: usage: %v", accountID, fetchErr))
-			return result
+			runErrors = append(runErrors, fmt.Sprintf("account %d: validated account snapshot is unavailable", accountID))
+			continue
 		}
 		billing, billingErr := s.remote.FetchBilling(ctx, account)
-		if billingErr != nil {
-			result.errors = append(result.errors, fmt.Sprintf("account %d: billing context: %v", accountID, billingErr))
+		if billingErr != nil || billing == nil {
+			runErrors = append(runErrors, fmt.Sprintf("account %d: billing context: %v", accountID, billingErr))
+			continue
 		}
-		matched, mismatched, reconcileErr := s.reconcileAccount(ctx, run.ID, &accountCfg, account, usage, billing)
-		result.matched, result.mismatched = matched, mismatched
-		if reconcileErr != nil {
-			result.errors = append(result.errors, fmt.Sprintf("account %d: reconcile: %v", accountID, reconcileErr))
+		if baselineErr := s.rebaselineActiveProbeModels(ctx, run.ID, account, billing, models); baselineErr != nil {
+			runErrors = append(runErrors, fmt.Sprintf("account %d: active baseline: %v", accountID, baselineErr))
+			continue
 		}
-		if cfg.ActiveProbeEnabled && s.prober != nil && billing != nil {
-			runEvidence, listErr := s.repo.ListEvidenceByRun(ctx, run.ID)
-			if listErr != nil {
-				result.errors = append(result.errors, fmt.Sprintf("account %d: list passive evidence: %v", accountID, listErr))
-			} else {
-				activeModels := accountCfg.DomesticModels
-				if !availabilityKnown {
-					activeModels = nil
-				}
-				missing := missingUpstreamPriceProbeModels(runEvidence, account.ID, activeModels)
-				probed, probeCost, probeErr := s.probeMissingUpstreamPriceModels(ctx, run.ID, &accountCfg, account, billing, missing)
-				result.probed, result.probeCost = probed, probeCost
-				if probeErr != nil {
-					result.errors = append(result.errors, fmt.Sprintf("account %d: active probe: %v", accountID, probeErr))
-				}
-			}
+		// Recovering an interrupted pending probe can persist previously unsettled
+		// spend. Refresh the database-day total after re-baselining and before a
+		// new paid request is allowed to start.
+		postBaselineCost, postBaselineErr := s.refreshUpstreamPriceProbeDailyBudget(ctx, budget)
+		if postBaselineErr != nil {
+			runErrors = append(runErrors, fmt.Sprintf("account %d: refresh probe budget after active baseline: %v", accountID, postBaselineErr))
+			continue
 		}
-		return result
-	}
-	accountWorkers := 3
-	if accountWorkers > len(cfg.AccountIDs) {
-		accountWorkers = len(cfg.AccountIDs)
-	}
-	accountJobs := make(chan int64)
-	accountResults := make(chan accountRunResult, len(cfg.AccountIDs))
-	var accountWG sync.WaitGroup
-	for worker := 0; worker < accountWorkers; worker++ {
-		accountWG.Add(1)
-		go func() {
-			defer accountWG.Done()
-			for accountID := range accountJobs {
-				accountResults <- processAccount(accountID)
-			}
-		}()
-	}
-	go func() {
-		defer close(accountJobs)
-		for _, accountID := range cfg.AccountIDs {
-			select {
-			case <-ctx.Done():
-				return
-			case accountJobs <- accountID:
-			}
+		dailyCostBeforeRun = postBaselineCost
+		if budget.spendStopReason() != "" {
+			break
 		}
-	}()
-	go func() {
-		accountWG.Wait()
-		close(accountResults)
-	}()
-	processedAccounts := 0
-	for result := range accountResults {
-		processedAccounts++
-		run.MatchedModels += result.matched
-		run.MismatchedModels += result.mismatched
-		run.ProbedModels += result.probed
-		run.ProbeCost += result.probeCost
-		runErrors = append(runErrors, result.errors...)
-	}
-	if processedAccounts != len(cfg.AccountIDs) {
-		runErrors = append(runErrors, "account processing stopped before every configured production account completed")
-	}
-	if s.pricePage != nil {
-		prices, pageErr := s.pricePage.FetchPerRequestPrices(ctx)
-		if pageErr != nil {
-			runErrors = append(runErrors, "per-request pricing page: "+pageErr.Error())
-		} else {
-			managedModels, syncErr := s.syncPerRequestDisplayCatalog(ctx, prices, cfg)
-			if syncErr != nil {
-				runErrors = append(runErrors, "per-request display catalogue: "+syncErr.Error())
-				prices = nil
-			} else {
-				cfg.PerRequestModels = managedModels
-			}
-			for model, price := range prices {
-				evidence := &domain.UpstreamPriceEvidence{
-					RunID: run.ID, AccountID: 0, ModelName: model, BillingMode: DisplayBillingModePerRequest,
-					Status: domain.UpstreamPriceEvidenceStatusTrusted, Source: domain.UpstreamPriceEvidenceSourcePricePage,
-					ReconciliationStatus: domain.UpstreamPriceReconciliationMatched, ContextKey: "price-page",
-					ObservedAt: s.now().UTC(), SampleCount: 1, Prices: price,
-					SuggestedPrices: multiplyUpstreamPriceVector(price, cfg.Markup),
-				}
-				if saveErr := s.repo.SaveReconciliation(ctx, nil, nil, evidence); saveErr != nil {
-					runErrors = append(runErrors, "per-request "+model+": "+saveErr.Error())
-					continue
-				}
-				run.MatchedModels++
-			}
+		probeErr := s.probeUpstreamPriceModels(ctx, run.ID, cfg, account, billing, models, budget)
+		if probeErr != nil {
+			runErrors = append(runErrors, fmt.Sprintf("account %d: active probe: %v", accountID, probeErr))
+		}
+		if budget.exhausted() {
+			break
 		}
 	}
+	run.ProbedModels = budget.probedModels
+	run.ProbeCost = budget.runSpent
 
 	finalizeCtx, cancelFinalize := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancelFinalize()
+	trustedModelNames := make(map[string]string)
+	failedModelNames := make(map[string]string)
+	for _, model := range unavailableModels {
+		failedModelNames[strings.ToLower(model)] = model
+	}
+	for _, models := range assignments {
+		for _, model := range models {
+			failedModelNames[strings.ToLower(model)] = model
+		}
+	}
 	evidence, listErr := s.repo.FreezeEvidenceApplySnapshot(
 		finalizeCtx, run.ID, cfg.ChannelIDs, cfg.DisplayMultiplierDecimals,
 	)
@@ -954,8 +953,21 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 			if item.Source == domain.UpstreamPriceEvidenceSourceActiveProbe {
 				evidenceProbeCost += math.Max(0, item.RemoteDelta.ActualCost)
 			}
+			if item.Source != domain.UpstreamPriceEvidenceSourceActiveProbe || item.BillingMode != DisplayBillingModeToken ||
+				strings.Contains(item.ContextKey, "-sample-") || item.ReconciliationStatus == domain.UpstreamPriceReconciliationBaseline {
+				continue
+			}
+			key := strings.ToLower(item.ModelName)
+			if item.Status == domain.UpstreamPriceEvidenceStatusTrusted {
+				trustedModelNames[key] = item.ModelName
+				delete(failedModelNames, key)
+			} else if _, trusted := trustedModelNames[key]; !trusted {
+				failedModelNames[key] = item.ModelName
+			}
 		}
 		run.ProbeCost = evidenceProbeCost
+		run.MatchedModels = len(trustedModelNames)
+		run.MismatchedModels = len(failedModelNames)
 	}
 	finished := s.now().UTC()
 	run.FinishedAt = &finished
@@ -975,21 +987,33 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 		accountLedgerHashes[key] = UpstreamPriceCredentialLedgerHash(account)
 		accountIdentityHashes[key] = UpstreamPriceAccountIdentityHash(account)
 	}
+	trustedModels := sortedUpstreamPriceModelNames(trustedModelNames)
+	failedModels := sortedUpstreamPriceModelNames(failedModelNames)
 	run.Summary = map[string]any{
 		"accounts": len(cfg.AccountIDs), "models": len(cfg.DomesticModels), "per_request_models": len(cfg.PerRequestModels), "observe_only": run.DryRun,
-		"account_ids":                 append([]int64(nil), cfg.AccountIDs...),
-		"channel_ids":                 append([]int64(nil), cfg.ChannelIDs...),
-		"display_multiplier_decimals": cfg.DisplayMultiplierDecimals,
-		"snapshot_max_age_minutes":    cfg.PassiveSampleMaxAgeMinutes,
-		"config_updated_at":           cfg.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		"account_ledger_hashes":       accountLedgerHashes,
-		"account_identity_hashes":     accountIdentityHashes,
-		"model_catalog_revision":      modelCatalogRevision,
+		"account_ids":                  append([]int64(nil), cfg.AccountIDs...),
+		"channel_ids":                  append([]int64(nil), cfg.ChannelIDs...),
+		"display_multiplier_decimals":  cfg.DisplayMultiplierDecimals,
+		"snapshot_max_age_minutes":     cfg.PassiveSampleMaxAgeMinutes,
+		"config_updated_at":            cfg.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		"account_ledger_hashes":        accountLedgerHashes,
+		"account_identity_hashes":      accountIdentityHashes,
+		"model_catalog_revision":       modelCatalogRevision,
+		"active_only":                  true,
+		"probe_models_attempted":       budget.modelsStarted,
+		"probe_models_planned":         expectedProbeModels,
+		"probe_max_requests_per_model": cfg.ActiveProbeMaxRequests,
+		"probe_run_budget_usd":         cfg.ActiveProbeRunBudgetUSD,
+		"probe_daily_budget_usd":       cfg.ActiveProbeDailyBudgetUSD,
+		"probe_daily_cost_before_run":  dailyCostBeforeRun,
+		"trusted_models":               trustedModels,
+		"failed_models":                failedModels,
+		"coverage_complete":            len(failedModels) == 0,
 	}
 	if finishErr := s.repo.FinishRun(finalizeCtx, run); finishErr != nil {
 		return run, fmt.Errorf("finish upstream price monitor run: %w", finishErr)
 	}
-	if run.Status == domain.UpstreamPriceMonitorRunStatusCompleted && !run.DryRun && cfg.Mode == domain.UpstreamPriceMonitorModeAutoApply {
+	if shouldAutoApplyUpstreamPriceRun(run, cfg) {
 		applied, applyErr := s.ApplyRun(ctx, run.ID, run.SnapshotHash)
 		if applyErr != nil {
 			message := "automatic price apply failed: " + applyErr.Error()
@@ -1015,12 +1039,21 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 	return run, nil
 }
 
+func shouldAutoApplyUpstreamPriceRun(run *domain.UpstreamPriceMonitorRun, cfg *domain.UpstreamPriceMonitorConfig) bool {
+	return run != nil && cfg != nil && run.Status == domain.UpstreamPriceMonitorRunStatusCompleted &&
+		run.MatchedModels > 0 && !run.DryRun && cfg.Mode == domain.UpstreamPriceMonitorModeAutoApply
+}
+
 func sameUpstreamPriceNonModelConfig(a, b *domain.UpstreamPriceMonitorConfig) bool {
 	if a == nil || b == nil || a.Enabled != b.Enabled || a.Mode != b.Mode ||
 		a.IntervalMinutes != b.IntervalMinutes || a.Markup != b.Markup ||
 		a.DisplayMultiplierDecimals != b.DisplayMultiplierDecimals ||
 		a.PassiveSampleMaxAgeMinutes != b.PassiveSampleMaxAgeMinutes ||
-		a.ActiveProbeEnabled != b.ActiveProbeEnabled || len(a.AccountIDs) != len(b.AccountIDs) ||
+		a.ActiveProbeEnabled != b.ActiveProbeEnabled || a.ActiveOnly != b.ActiveOnly ||
+		a.ActiveProbeMaxRequests != b.ActiveProbeMaxRequests ||
+		a.ActiveProbeMaxModels != b.ActiveProbeMaxModels ||
+		a.ActiveProbeRunBudgetUSD != b.ActiveProbeRunBudgetUSD ||
+		a.ActiveProbeDailyBudgetUSD != b.ActiveProbeDailyBudgetUSD || len(a.AccountIDs) != len(b.AccountIDs) ||
 		len(a.ChannelIDs) != len(b.ChannelIDs) || len(a.PerRequestModels) != len(b.PerRequestModels) {
 		return false
 	}
@@ -1200,6 +1233,7 @@ func (s *UpstreamPriceMonitorService) reconcileAccount(
 			errs = append(errs, model+": observations: "+obsErr.Error())
 		} else {
 			observations = append(observations, domain.UpstreamPriceObservation{
+				Requests:    remoteDelta.Requests,
 				InputTokens: remoteDelta.InputTokens, OutputTokens: remoteDelta.OutputTokens,
 				CacheCreationTokens: remoteDelta.CacheCreationTokens, CacheReadTokens: remoteDelta.CacheReadTokens,
 				ActualCost: remoteDelta.ActualCost,
@@ -1228,6 +1262,312 @@ type upstreamPriceActiveProbeResult struct {
 	probed bool
 	cost   float64
 	err    error
+}
+
+type upstreamPriceProbeBudget struct {
+	runLimit       float64
+	dailyLimit     float64
+	dailyBeforeRun float64
+	runSpent       float64
+	maxModels      int
+	modelsStarted  int
+	probedModels   int
+}
+
+type upstreamPriceProbeSampleRecorder func(cost float64) (continueModel bool, err error)
+
+func newUpstreamPriceProbeBudget(cfg *domain.UpstreamPriceMonitorConfig, dailyCostBeforeRun float64) *upstreamPriceProbeBudget {
+	return &upstreamPriceProbeBudget{
+		runLimit: cfg.ActiveProbeRunBudgetUSD, dailyLimit: cfg.ActiveProbeDailyBudgetUSD,
+		dailyBeforeRun: math.Max(0, dailyCostBeforeRun), maxModels: cfg.ActiveProbeMaxModels,
+	}
+}
+
+func (b *upstreamPriceProbeBudget) stopReason() string {
+	if b == nil {
+		return "active probe budget is unavailable"
+	}
+	if b.modelsStarted >= b.maxModels {
+		return fmt.Sprintf("active probe model limit reached (%d)", b.maxModels)
+	}
+	return b.spendStopReason()
+}
+
+func (b *upstreamPriceProbeBudget) spendStopReason() string {
+	if b == nil {
+		return "active probe budget is unavailable"
+	}
+	const epsilon = 1e-12
+	if b.runSpent+epsilon >= b.runLimit {
+		return fmt.Sprintf("active probe run budget reached ($%.10g/$%.10g)", b.runSpent, b.runLimit)
+	}
+	if b.dailyBeforeRun+b.runSpent+epsilon >= b.dailyLimit {
+		return fmt.Sprintf("active probe daily budget reached ($%.10g/$%.10g)", b.dailyBeforeRun+b.runSpent, b.dailyLimit)
+	}
+	return ""
+}
+
+func (b *upstreamPriceProbeBudget) exhausted() bool { return b != nil && b.stopReason() != "" }
+
+func assignUpstreamPriceProbeModels(
+	accountIDs []int64,
+	models []string,
+	availability map[int64]map[string]struct{},
+	maxModels int,
+) (map[int64][]string, []string) {
+	assignments := make(map[int64][]string, len(accountIDs))
+	unavailable := make([]string, 0)
+	if maxModels < len(models) {
+		models = models[:maxModels]
+	}
+	for _, model := range models {
+		assigned := false
+		for _, accountID := range accountIDs {
+			available, known := availability[accountID]
+			if !known {
+				continue
+			}
+			if _, ok := available[strings.ToLower(model)]; !ok {
+				continue
+			}
+			assignments[accountID] = append(assignments[accountID], model)
+			assigned = true
+			break
+		}
+		if !assigned {
+			unavailable = append(unavailable, model)
+		}
+	}
+	return assignments, unavailable
+}
+
+func sortedUpstreamPriceModelNames(values map[string]string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i]) < strings.ToLower(out[j]) })
+	return out
+}
+
+func (s *UpstreamPriceMonitorService) rebaselineActiveProbeModels(
+	ctx context.Context,
+	runID int64,
+	account *Account,
+	billing *domain.UpstreamPriceBillingSnapshot,
+	models []string,
+) error {
+	usage, err := s.remote.FetchUsage(ctx, account)
+	if err != nil {
+		return err
+	}
+	if usage == nil || strings.TrimSpace(usage.LedgerDate) == "" {
+		return errors.New("remote usage snapshot has no fixed ledger_date")
+	}
+	checkpoints, err := s.repo.GetCheckpoints(ctx, account.ID, models)
+	if err != nil {
+		return err
+	}
+	highWatermark, err := s.repo.CurrentLocalUsageLogID(ctx, []int64{account.ID})
+	if err != nil {
+		return err
+	}
+	identityHash := UpstreamPriceAccountIdentityHash(account)
+	billingHash, _ := upstreamPriceBillingContext(billing)
+	remoteModels := canonicalUsageMap(usage.Models)
+	var baselineErrors []error
+	for _, model := range models {
+		previous, exists := checkpointForModel(checkpoints, model)
+		evidence := &domain.UpstreamPriceEvidence{
+			RunID: runID, AccountID: account.ID, ModelName: model, BillingMode: DisplayBillingModeToken,
+			Status: domain.UpstreamPriceEvidenceStatusPending, Source: domain.UpstreamPriceEvidenceSourceActiveProbe,
+			ReconciliationStatus: domain.UpstreamPriceReconciliationBaseline,
+			ContextKey:           "active-baseline", ObservedAt: usage.CapturedAt.UTC(),
+			DimensionStatuses: pendingUpstreamTokenDimensionStatuses(),
+			LastError:         "active-only baseline established; historical user or external traffic was excluded from inference",
+		}
+		if exists && previous.ActiveProbePending && previous.ActiveProbeStartedAt != nil &&
+			usage.CapturedAt.Sub(*previous.ActiveProbeStartedAt) < 2*time.Minute {
+			evidence.Status = domain.UpstreamPriceEvidenceStatusUnobservable
+			evidence.ReconciliationStatus = domain.UpstreamPriceReconciliationNoActivity
+			evidence.ContextKey = "active-baseline-pending"
+			evidence.LastError = "previous active probe settlement is still inside its grace period"
+			if saveErr := s.repo.SaveReconciliation(ctx, nil, nil, evidence); saveErr != nil {
+				baselineErrors = append(baselineErrors, fmt.Errorf("%s: %w", model, saveErr))
+			}
+			continue
+		}
+		if exists && previous.ActiveProbePending {
+			if recovered, ok := subtractUpstreamPriceCounters(previous.Remote, remoteModels[strings.ToLower(model)]); ok {
+				evidence.RemoteDelta = recovered
+				evidence.LastError += "; interrupted active probe was conservatively recovered into the spend ledger"
+			}
+		}
+		checkpoint := &domain.UpstreamPriceUsageCheckpoint{
+			AccountID: account.ID, ModelName: model, AccountIdentityHash: identityHash,
+			Remote: remoteModels[strings.ToLower(model)], LedgerDate: usage.LedgerDate,
+			BillingContextHash: billingHash, LocalUsageLogID: highWatermark,
+			CapturedAt: usage.CapturedAt.UTC(),
+		}
+		var expectedRevision *int64
+		if exists {
+			revision := previous.Revision
+			expectedRevision = &revision
+		}
+		if saveErr := s.repo.SaveReconciliation(ctx, checkpoint, expectedRevision, evidence); saveErr != nil {
+			baselineErrors = append(baselineErrors, fmt.Errorf("%s: %w", model, saveErr))
+		}
+	}
+	return errors.Join(baselineErrors...)
+}
+
+func (s *UpstreamPriceMonitorService) probeUpstreamPriceModels(
+	ctx context.Context,
+	runID int64,
+	cfg *domain.UpstreamPriceMonitorConfig,
+	account *Account,
+	billing *domain.UpstreamPriceBillingSnapshot,
+	models []string,
+	budget *upstreamPriceProbeBudget,
+) error {
+	var probeErrors []error
+	for _, model := range models {
+		if budget.stopReason() != "" {
+			break
+		}
+		budget.modelsStarted++
+		recordSample := func(cost float64) (bool, error) {
+			budget.runSpent += math.Max(0, cost)
+			if err := s.persistUpstreamPriceProbeProgress(ctx, runID, budget); err != nil {
+				return false, err
+			}
+			return budget.spendStopReason() == "", nil
+		}
+		probed, _, err := s.probeOneUpstreamPriceModel(ctx, runID, cfg, account, billing, model, recordSample)
+		if probed {
+			budget.probedModels++
+		}
+		if progressErr := s.persistUpstreamPriceProbeProgress(ctx, runID, budget); progressErr != nil {
+			probeErrors = append(probeErrors, fmt.Errorf("persist probe progress after %s: %w", model, progressErr))
+			break
+		}
+		if err != nil {
+			probeErrors = append(probeErrors, fmt.Errorf("%s: %w", model, err))
+			break
+		}
+	}
+	return errors.Join(probeErrors...)
+}
+
+func (s *UpstreamPriceMonitorService) persistUpstreamPriceProbeProgress(
+	ctx context.Context,
+	runID int64,
+	budget *upstreamPriceProbeBudget,
+) error {
+	progressCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return s.repo.UpdateRunProbeProgress(progressCtx, runID, budget.probedModels, budget.runSpent)
+}
+
+func (s *UpstreamPriceMonitorService) refreshUpstreamPriceProbeDailyBudget(
+	ctx context.Context,
+	budget *upstreamPriceProbeBudget,
+) (float64, error) {
+	runtime, err := s.repo.GetRuntime(ctx)
+	if err != nil {
+		return 0, err
+	}
+	cost := math.Max(0, runtime.TodayProbeCost)
+	budget.dailyBeforeRun = cost
+	return cost, nil
+}
+
+func pendingUpstreamTokenDimensionStatuses() map[string]string {
+	return map[string]string{
+		"input": "pending", "output": "pending", "cache_write": "pending", "cache_read": "pending",
+	}
+}
+
+func pendingUpstreamTokenDimensionStatusesForCounters(counters domain.UpstreamPriceUsageCounters) map[string]string {
+	statuses := map[string]string{
+		"input": "unobserved", "output": "unobserved", "cache_write": "unobserved", "cache_read": "unobserved",
+	}
+	if counters.InputTokens > 0 {
+		statuses["input"] = "pending"
+	}
+	if counters.OutputTokens > 0 {
+		statuses["output"] = "pending"
+	}
+	if counters.CacheCreationTokens > 0 {
+		statuses["cache_write"] = "pending"
+	}
+	if counters.CacheReadTokens > 0 {
+		statuses["cache_read"] = "pending"
+	}
+	return statuses
+}
+
+func failedUpstreamTokenDimensionStatuses() map[string]string {
+	return map[string]string{
+		"input": "failed", "output": "failed", "cache_write": "failed", "cache_read": "failed",
+	}
+}
+
+func upstreamTokenDimensionStatuses(
+	status domain.UpstreamPriceEvidenceStatus,
+	prices domain.UpstreamPriceVector,
+	observations []domain.UpstreamPriceObservation,
+) map[string]string {
+	statuses := map[string]string{
+		"input": "unobserved", "output": "unobserved", "cache_write": "unobserved", "cache_read": "unobserved",
+	}
+	if status == domain.UpstreamPriceEvidenceStatusMismatch || status == domain.UpstreamPriceEvidenceStatusUnobservable {
+		return failedUpstreamTokenDimensionStatuses()
+	}
+	if status == domain.UpstreamPriceEvidenceStatusTrusted {
+		if prices.InputPerMillion != nil {
+			statuses["input"] = "observed"
+		}
+		if prices.OutputPerMillion != nil {
+			statuses["output"] = "observed"
+		}
+		if prices.CacheWritePerMillion != nil {
+			statuses["cache_write"] = "observed"
+		}
+		if prices.CacheReadPerMillion != nil {
+			statuses["cache_read"] = "observed"
+		}
+		return statuses
+	}
+	for _, observation := range observations {
+		if observation.InputTokens > 0 {
+			statuses["input"] = "pending"
+		}
+		if observation.OutputTokens > 0 {
+			statuses["output"] = "pending"
+		}
+		if observation.CacheCreationTokens > 0 {
+			statuses["cache_write"] = "pending"
+		}
+		if observation.CacheReadTokens > 0 {
+			statuses["cache_read"] = "pending"
+		}
+	}
+	return statuses
+}
+
+func normalizeUpstreamPriceObservationsForPeak(
+	observations []domain.UpstreamPriceObservation,
+	appliedPeakMultiplier float64,
+) ([]domain.UpstreamPriceObservation, error) {
+	if appliedPeakMultiplier <= 0 || math.IsNaN(appliedPeakMultiplier) || math.IsInf(appliedPeakMultiplier, 0) {
+		return nil, errors.New("billing context has an invalid applied peak multiplier")
+	}
+	normalized := append([]domain.UpstreamPriceObservation(nil), observations...)
+	for i := range normalized {
+		normalized[i].ActualCost /= appliedPeakMultiplier
+	}
+	return normalized, nil
 }
 
 func missingUpstreamPriceProbeModels(
@@ -1326,7 +1666,12 @@ func (s *UpstreamPriceMonitorService) probeOneUpstreamPriceModel(
 	account *Account,
 	billing *domain.UpstreamPriceBillingSnapshot,
 	model string,
+	recorders ...upstreamPriceProbeSampleRecorder,
 ) (bool, float64, error) {
+	var recordSample upstreamPriceProbeSampleRecorder
+	if len(recorders) > 0 {
+		recordSample = recorders[0]
+	}
 	checkpoints, err := s.repo.GetCheckpoints(ctx, account.ID, []string{model})
 	if err != nil {
 		return false, 0, err
@@ -1368,11 +1713,15 @@ func (s *UpstreamPriceMonitorService) probeOneUpstreamPriceModel(
 	if initialUsage.LedgerDate != checkpoint.LedgerDate || checkpoint.AccountIdentityHash != identityHash ||
 		checkpoint.BillingContextHash != billingHash || !equalUpstreamPriceFullCounters(initialRemote, checkpoint.Remote) ||
 		!upstreamPriceCountersEmpty(initialLocal[strings.ToLower(model)].Counters) {
-		evidence.LastError = "new natural traffic arrived before active attribution; deferred to passive reconciliation"
+		evidence.LastError = "external or local traffic changed the active-only baseline before attribution; model probe aborted"
+		evidence.DimensionStatuses = failedUpstreamTokenDimensionStatuses()
 		return false, 0, s.repo.SaveReconciliation(ctx, nil, nil, evidence)
 	}
 
 	specs := upstreamPriceActiveProbeSpecs(model)
+	if cfg.ActiveProbeMaxRequests < len(specs) {
+		specs = specs[:cfg.ActiveProbeMaxRequests]
+	}
 	observations := make([]domain.UpstreamPriceObservation, 0, len(specs))
 	checkpoint.Remote = initialRemote
 	checkpoint.LocalUsageLogID = initialLocalID
@@ -1381,6 +1730,14 @@ func (s *UpstreamPriceMonitorService) probeOneUpstreamPriceModel(
 	contaminated := false
 	var notes []string
 	probeCost := 0.0
+	recordSettledCost := func(cost float64) (bool, error) {
+		cost = math.Max(0, cost)
+		probeCost += cost
+		if recordSample == nil {
+			return true, nil
+		}
+		return recordSample(cost)
+	}
 	explicitFallbackStarted := false
 	for specIndex, spec := range specs {
 		if spec.ExplicitCache && !explicitFallbackStarted {
@@ -1405,7 +1762,7 @@ func (s *UpstreamPriceMonitorService) probeOneUpstreamPriceModel(
 		}
 		if beforeUsage.LedgerDate != checkpoint.LedgerDate || !equalUpstreamPriceFullCounters(beforeRemote, checkpoint.Remote) ||
 			!upstreamPriceCountersEmpty(localBefore[strings.ToLower(model)].Counters) {
-			notes = append(notes, "natural traffic arrived between active samples; remaining probes deferred")
+			notes = append(notes, "external or local traffic arrived between active samples; remaining probes aborted")
 			break
 		}
 
@@ -1488,8 +1845,28 @@ func (s *UpstreamPriceMonitorService) probeOneUpstreamPriceModel(
 		localDelta := localDuring[strings.ToLower(model)].Counters
 		if remoteDelta.Requests != 1 || !upstreamPriceCountersEmpty(localDelta) {
 			contaminated = true
-			notes = append(notes, "active probe overlapped natural or external traffic; durable pending state retained for delayed recovery")
+			notes = append(notes, "active probe overlapped external or local traffic; sample rejected and durable pending state retained")
+			contaminatedEvidence := &domain.UpstreamPriceEvidence{
+				RunID: runID, AccountID: account.ID, ModelName: model, BillingMode: DisplayBillingModeToken,
+				Status: domain.UpstreamPriceEvidenceStatusMismatch, Source: domain.UpstreamPriceEvidenceSourceActiveProbe,
+				ReconciliationStatus: domain.UpstreamPriceReconciliationMixedContext,
+				ContextKey:           activeContextKey + "-sample-" + strconv.Itoa(specIndex),
+				ObservedAt:           afterUsage.CapturedAt.UTC(), SampleCount: 1,
+				LocalDelta: localDelta, RemoteDelta: remoteDelta,
+				DimensionStatuses: failedUpstreamTokenDimensionStatuses(),
+				LastError:         "sample rejected because its request/token window was not exclusive",
+			}
+			settleCtx, cancelSettle := upstreamPriceProbeSettlementContext(ctx)
+			saveErr := s.repo.SaveReconciliation(settleCtx, nil, nil, contaminatedEvidence)
+			cancelSettle()
 			releaseProbeSlot()
+			if saveErr != nil {
+				_, recordErr := recordSettledCost(remoteDelta.ActualCost)
+				return false, probeCost, errors.Join(saveErr, recordErr)
+			}
+			if _, recordErr := recordSettledCost(remoteDelta.ActualCost); recordErr != nil {
+				return false, probeCost, recordErr
+			}
 			break
 		}
 		sampleEvidence := &domain.UpstreamPriceEvidence{
@@ -1498,6 +1875,7 @@ func (s *UpstreamPriceMonitorService) probeOneUpstreamPriceModel(
 			ReconciliationStatus: domain.UpstreamPriceReconciliationMatched,
 			ContextKey:           activeContextKey + "-sample-" + strconv.Itoa(specIndex),
 			ObservedAt:           afterUsage.CapturedAt.UTC(), SampleCount: 1, RemoteDelta: remoteDelta,
+			DimensionStatuses: pendingUpstreamTokenDimensionStatusesForCounters(remoteDelta),
 		}
 		settleCtx, cancelSettle := upstreamPriceProbeSettlementContext(ctx)
 		expectedRevision = checkpoint.Revision
@@ -1505,18 +1883,27 @@ func (s *UpstreamPriceMonitorService) probeOneUpstreamPriceModel(
 		cancelSettle()
 		if settleErr != nil {
 			releaseProbeSlot()
-			return false, probeCost, settleErr
+			_, recordErr := recordSettledCost(remoteDelta.ActualCost)
+			return false, probeCost, errors.Join(settleErr, recordErr)
 		}
 		checkpoint = settledCheckpoint
 		releaseProbeSlot()
-		probeCost += math.Max(0, remoteDelta.ActualCost)
+		continueModel, recordErr := recordSettledCost(remoteDelta.ActualCost)
+		if recordErr != nil {
+			return len(observations) > 0, probeCost, recordErr
+		}
 		observations = append(observations, domain.UpstreamPriceObservation{
+			Requests:    remoteDelta.Requests,
 			InputTokens: remoteDelta.InputTokens, OutputTokens: remoteDelta.OutputTokens,
 			CacheCreationTokens: remoteDelta.CacheCreationTokens, CacheReadTokens: remoteDelta.CacheReadTokens,
 			ActualCost: remoteDelta.ActualCost,
 		})
 		if sendErr != nil {
 			notes = append(notes, "probe response failed after one attributable ledger charge: "+sendErr.Error())
+		}
+		if !continueModel {
+			notes = append(notes, "active probe spend limit reached after the settled sample; remaining requests for this model were stopped")
+			break
 		}
 	}
 
@@ -1544,16 +1931,20 @@ func (s *UpstreamPriceMonitorService) probeOneUpstreamPriceModel(
 	} else if len(observations) > 0 {
 		evidence.Status = domain.UpstreamPriceEvidenceStatusPending
 		evidence.ReconciliationStatus = domain.UpstreamPriceReconciliationMatched
-		prices, sampleCount, solveErr := SolveUpstreamTokenPrices(observations)
+		normalizedObservations, normalizeErr := normalizeUpstreamPriceObservationsForPeak(observations, billing.AppliedPeakMultiplier)
+		prices, sampleCount, solveErr := SolveUpstreamTokenPrices(normalizedObservations)
 		evidence.SampleCount = sampleCount
-		if solveErr == nil {
+		if normalizeErr != nil {
+			notes = append(notes, normalizeErr.Error())
+		} else if solveErr == nil {
 			evidence.Status = domain.UpstreamPriceEvidenceStatusTrusted
 			evidence.Prices = prices
-			evidence.SuggestedPrices = multiplyUpstreamPriceVector(prices, cfg.Markup)
+			evidence.SuggestedPrices = multiplyUpstreamPriceVector(prices, upstreamPriceRequiredMarkup)
 		} else {
 			notes = append(notes, solveErr.Error())
 		}
 	}
+	evidence.DimensionStatuses = upstreamTokenDimensionStatuses(evidence.Status, evidence.Prices, observations)
 	evidence.LastError = strings.Join(notes, "; ")
 	saveCtx, cancelSave := upstreamPriceProbeSettlementContext(ctx)
 	defer cancelSave()
@@ -1832,19 +2223,20 @@ func UpstreamPriceCredentialLedgerHash(account *Account) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// SolveUpstreamTokenPrices solves C = Xp using full-rank matched windows. Token
-// columns that have never been observed are omitted and remain nil. Prices are
-// returned in USD per million tokens.
+// SolveUpstreamTokenPrices solves C = Xp using full-rank isolated windows. A
+// request-count intercept is fitted whenever request counts are present, so a
+// fixed upstream request fee cannot be silently absorbed into token prices.
+// Token prices are returned in USD per million tokens.
 func SolveUpstreamTokenPrices(observations []domain.UpstreamPriceObservation) (domain.UpstreamPriceVector, int, error) {
 	valid := make([]domain.UpstreamPriceObservation, 0, len(observations))
-	active := [4]bool{}
+	active := [5]bool{}
 	for _, row := range observations {
 		if row.ActualCost < 0 || math.IsNaN(row.ActualCost) || math.IsInf(row.ActualCost, 0) {
 			continue
 		}
-		tokens := [4]int64{row.InputTokens, row.OutputTokens, row.CacheCreationTokens, row.CacheReadTokens}
+		values := [5]int64{row.Requests, row.InputTokens, row.OutputTokens, row.CacheCreationTokens, row.CacheReadTokens}
 		invalid := false
-		for i, value := range tokens {
+		for i, value := range values {
 			if value < 0 {
 				invalid = true
 			}
@@ -1856,7 +2248,7 @@ func SolveUpstreamTokenPrices(observations []domain.UpstreamPriceObservation) (d
 			valid = append(valid, row)
 		}
 	}
-	columns := make([]int, 0, 4)
+	columns := make([]int, 0, 5)
 	for i, enabled := range active {
 		if enabled {
 			columns = append(columns, i)
@@ -1873,10 +2265,13 @@ func SolveUpstreamTokenPrices(observations []domain.UpstreamPriceObservation) (d
 		a[i] = make([]float64, n)
 	}
 	for _, row := range valid {
-		tokens := [4]int64{row.InputTokens, row.OutputTokens, row.CacheCreationTokens, row.CacheReadTokens}
+		values := [5]int64{row.Requests, row.InputTokens, row.OutputTokens, row.CacheCreationTokens, row.CacheReadTokens}
 		x := make([]float64, n)
 		for i, column := range columns {
-			x[i] = float64(tokens[column]) / 1_000_000
+			x[i] = float64(values[column])
+			if column > 0 {
+				x[i] /= 1_000_000
+			}
 		}
 		for i := 0; i < n; i++ {
 			b[i] += x[i] * row.ActualCost
@@ -1899,10 +2294,14 @@ func SolveUpstreamTokenPrices(observations []domain.UpstreamPriceObservation) (d
 	}
 	maxCost, maxResidual := 0.0, 0.0
 	for _, row := range valid {
-		tokens := [4]int64{row.InputTokens, row.OutputTokens, row.CacheCreationTokens, row.CacheReadTokens}
+		values := [5]int64{row.Requests, row.InputTokens, row.OutputTokens, row.CacheCreationTokens, row.CacheReadTokens}
 		predicted := 0.0
 		for i, column := range columns {
-			predicted += float64(tokens[column]) / 1_000_000 * solution[i]
+			scale := float64(values[column])
+			if column > 0 {
+				scale /= 1_000_000
+			}
+			predicted += scale * solution[i]
 		}
 		maxCost = math.Max(maxCost, row.ActualCost)
 		maxResidual = math.Max(maxResidual, math.Abs(predicted-row.ActualCost))
@@ -1915,12 +2314,14 @@ func SolveUpstreamTokenPrices(observations []domain.UpstreamPriceObservation) (d
 		value := solution[i]
 		switch column {
 		case 0:
-			out.InputPerMillion = &value
+			out.FixedPerRequest = &value
 		case 1:
-			out.OutputPerMillion = &value
+			out.InputPerMillion = &value
 		case 2:
-			out.CacheWritePerMillion = &value
+			out.OutputPerMillion = &value
 		case 3:
+			out.CacheWritePerMillion = &value
+		case 4:
 			out.CacheReadPerMillion = &value
 		}
 	}
@@ -1981,6 +2382,7 @@ func solveUpstreamPriceLinearSystem(a [][]float64, b []float64) ([]float64, bool
 
 func multiplyUpstreamPriceVector(value domain.UpstreamPriceVector, multiplier float64) domain.UpstreamPriceVector {
 	return domain.UpstreamPriceVector{
+		FixedPerRequest:      multiplyPricePtr(value.FixedPerRequest, multiplier),
 		InputPerMillion:      multiplyPricePtr(value.InputPerMillion, multiplier),
 		OutputPerMillion:     multiplyPricePtr(value.OutputPerMillion, multiplier),
 		CacheWritePerMillion: multiplyPricePtr(value.CacheWritePerMillion, multiplier),

@@ -14,6 +14,16 @@ export type UpstreamPriceEvidenceStatus =
   | 'stale'
   | 'unobservable'
 export type UpstreamPriceEvidenceSource = 'user_request' | 'active_probe' | 'price_page'
+export type UpstreamPriceDimension =
+  | 'fixed_per_request'
+  | 'input'
+  | 'output'
+  | 'cache_write'
+  | 'cache_read'
+  | 'per_request_lte_256k'
+  | 'per_request_256k_512k'
+  | 'per_request_gt_512k'
+export type UpstreamPriceDimensionStatus = 'observed' | 'unobserved' | 'pending' | 'failed'
 export type UpstreamPriceRunStatus =
   | 'running'
   | 'completed'
@@ -32,6 +42,12 @@ export interface UpstreamPriceMonitorConfig {
   per_request_models: string[]
   passive_sample_max_age_minutes: number
   active_probe_enabled: boolean
+  /** Pure active mode never consumes or reconciles customer requests. */
+  active_only: boolean
+  active_probe_max_models_per_run: number
+  active_probe_max_requests_per_model: number
+  active_probe_run_budget_usd: number
+  active_probe_daily_budget_usd: number
   updated_at?: string
 }
 
@@ -47,6 +63,8 @@ export interface UpstreamPriceMonitorRuntime {
   consecutive_failures: number
   last_error: string
   today_probe_cost: number
+  current_run_probe_cost?: number
+  remaining_daily_probe_budget_usd?: number
   coverage: UpstreamPriceCoverage
   current_run_id?: number | null
   key_exclusive?: boolean | null
@@ -54,6 +72,7 @@ export interface UpstreamPriceMonitorRuntime {
 }
 
 export interface UpstreamPriceValues {
+  fixed_per_request?: number | null
   input_per_million?: number | null
   output_per_million?: number | null
   cache_write_per_million?: number | null
@@ -89,6 +108,7 @@ export interface UpstreamPriceEvidence {
   display_prices_current?: UpstreamPriceValues | null
   display_multiplier_current?: number | null
   display_multiplier_suggested?: number | null
+  dimension_statuses?: Partial<Record<UpstreamPriceDimension, UpstreamPriceDimensionStatus>>
   last_error?: string
 }
 
@@ -139,6 +159,13 @@ export interface UpstreamPriceRunListResponse {
 export interface CreateUpstreamPriceRunRequest {
   dry_run: true
   model_names?: string[]
+}
+
+/** New async handlers may return an accepted envelope; older handlers return the run directly. */
+export interface CreateUpstreamPriceRunAcceptedResponse {
+  accepted?: boolean
+  poll_after_ms?: number
+  run: UpstreamPriceMonitorRun
 }
 
 export interface ApplyUpstreamPriceRunRequest {
@@ -230,8 +257,11 @@ export async function discoverModels(): Promise<{ items: UpstreamPriceModelCatal
 export async function createRun(
   request: CreateUpstreamPriceRunRequest = { dry_run: true },
 ): Promise<UpstreamPriceMonitorRun> {
-  const { data } = await apiClient.post<UpstreamPriceMonitorRun>(`${basePath}/runs`, request)
-  return data
+  const { data } = await apiClient.post<UpstreamPriceMonitorRun | CreateUpstreamPriceRunAcceptedResponse>(
+    `${basePath}/runs`,
+    request,
+  )
+  return 'run' in data ? data.run : data
 }
 
 export async function applyRun(

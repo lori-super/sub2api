@@ -16,6 +16,8 @@ type activeProbeTestRepository struct {
 	savedCP        *domain.UpstreamPriceUsageCheckpoint
 	aggregateCalls int
 	contaminate    bool
+	progressCosts  []float64
+	runtimeCost    float64
 }
 
 func (r *activeProbeTestRepository) GetConfig(context.Context) (*domain.UpstreamPriceMonitorConfig, error) {
@@ -26,9 +28,13 @@ func (r *activeProbeTestRepository) UpdateConfig(context.Context, *domain.Upstre
 	return nil
 }
 func (r *activeProbeTestRepository) GetRuntime(context.Context) (*domain.UpstreamPriceMonitorRuntime, error) {
-	return &domain.UpstreamPriceMonitorRuntime{}, nil
+	return &domain.UpstreamPriceMonitorRuntime{TodayProbeCost: r.runtimeCost}, nil
 }
 func (r *activeProbeTestRepository) CreateRun(context.Context, *domain.UpstreamPriceMonitorRun) error {
+	return nil
+}
+func (r *activeProbeTestRepository) UpdateRunProbeProgress(_ context.Context, _ int64, _ int, cost float64) error {
+	r.progressCosts = append(r.progressCosts, cost)
 	return nil
 }
 func (r *activeProbeTestRepository) FinishRun(context.Context, *domain.UpstreamPriceMonitorRun) error {
@@ -215,4 +221,54 @@ func TestActiveProbeKeepsDurablePendingWhenAnyLocalTrafficAppears(t *testing.T) 
 	require.True(t, repo.savedCP.ActiveProbePending)
 	require.NotNil(t, repo.saved)
 	require.Equal(t, domain.UpstreamPriceEvidenceStatusUnobservable, repo.saved.Status)
+}
+
+func TestActiveProbeStopsCurrentModelImmediatelyAfterSettledSampleExhaustsBudget(t *testing.T) {
+	originalPollInterval := upstreamPriceProbeLedgerPollInterval
+	upstreamPriceProbeLedgerPollInterval = time.Millisecond
+	t.Cleanup(func() { upstreamPriceProbeLedgerPollInterval = originalPollInterval })
+	account := &Account{ID: 7, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"api_key": "test-key-not-real", "base_url": "https://us-api.example.invalid",
+	}}
+	billing := &domain.UpstreamPriceBillingSnapshot{
+		ResolvedRateMultiplier: 1, EffectiveRateMultiplier: 1, AppliedPeakMultiplier: 1,
+	}
+	billingHash, _ := upstreamPriceBillingContext(billing)
+	repo := &activeProbeTestRepository{checkpoint: domain.UpstreamPriceUsageCheckpoint{
+		AccountID: 7, ModelName: "MiniMax-M3", AccountIdentityHash: UpstreamPriceAccountIdentityHash(account),
+		LedgerDate: "2026-08-30", BillingContextHash: billingHash, Revision: 1,
+	}}
+	script := &activeProbeScript{now: time.Date(2026, 8, 30, 1, 0, 0, 0, time.UTC)}
+	svc := NewUpstreamPriceMonitorService(repo, nil, script)
+	svc.SetActiveProber(script)
+	svc.probeSlotAcquirer = func(context.Context, *Account) (func(), bool, error) {
+		return func() {}, true, nil
+	}
+	svc.now = func() time.Time { return script.now }
+	cfg := domain.DefaultUpstreamPriceMonitorConfig()
+	cfg.ActiveProbeRunBudgetUSD = activeProbeRowCost(activeProbeRows[0]) / 2
+	budget := newUpstreamPriceProbeBudget(&cfg, 0)
+
+	err := svc.probeUpstreamPriceModels(
+		context.Background(), 13, &cfg, account, billing, []string{"MiniMax-M3"}, budget,
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, script.step, "no second request may start after the first settled sample exhausts the budget")
+	require.InDelta(t, activeProbeRowCost(activeProbeRows[0]), budget.runSpent, 1e-12)
+	require.Contains(t, budget.spendStopReason(), "run budget reached")
+	require.NotEmpty(t, repo.progressCosts)
+	require.InDelta(t, budget.runSpent, repo.progressCosts[0], 1e-12)
+}
+
+func TestRefreshProbeBudgetUsesRecoveredPendingSpendBeforeNewProbe(t *testing.T) {
+	cfg := domain.DefaultUpstreamPriceMonitorConfig()
+	budget := newUpstreamPriceProbeBudget(&cfg, 0.05)
+	repo := &activeProbeTestRepository{runtimeCost: 0.20}
+	svc := NewUpstreamPriceMonitorService(repo, nil, nil)
+
+	cost, err := svc.refreshUpstreamPriceProbeDailyBudget(context.Background(), budget)
+	require.NoError(t, err)
+	require.InDelta(t, 0.20, cost, 1e-12)
+	require.InDelta(t, 0.20, budget.dailyBeforeRun, 1e-12)
+	require.Contains(t, budget.spendStopReason(), "daily budget reached")
 }

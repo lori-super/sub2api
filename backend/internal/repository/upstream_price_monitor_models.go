@@ -133,15 +133,19 @@ func (r *upstreamPriceMonitorRepository) SetModelCatalogStatus(
 	defer func() { _ = tx.Rollback() }()
 	if status == domain.UpstreamPriceModelStatusManaged {
 		var seen, expected int
-		var currentComplete bool
-		if err := tx.QueryRowContext(ctx, `SELECT m.seen_account_count,m.expected_account_count,
+		var currentComplete, domesticCandidate bool
+		if err := tx.QueryRowContext(ctx, `SELECT m.seen_account_count,m.expected_account_count,m.domestic_candidate,
 			(state.discovery_complete AND m.last_complete_revision=state.revision)
 			FROM upstream_price_monitor_models m CROSS JOIN upstream_price_monitor_model_scan_state state
-			WHERE m.model_key=LOWER($1) AND state.id=1 FOR UPDATE OF m,state`, model).Scan(&seen, &expected, &currentComplete); err != nil {
+			WHERE m.model_key=LOWER($1) AND state.id=1 FOR UPDATE OF m,state`, model).
+			Scan(&seen, &expected, &domesticCandidate, &currentComplete); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil, fmt.Errorf("%w: model is not in the discovered catalogue", service.ErrUpstreamPriceMonitorInvalidConfig)
 			}
 			return nil, err
+		}
+		if !domesticCandidate || !isDefaultUpstreamPriceDomesticModel(model) {
+			return nil, fmt.Errorf("%w: model is outside the closed domestic token-price scope", service.ErrUpstreamPriceMonitorInvalidConfig)
 		}
 		if !currentComplete || expected <= 0 || seen != expected {
 			return nil, fmt.Errorf("%w: model is not visible on every selected production account", service.ErrUpstreamPriceMonitorInvalidConfig)
@@ -172,6 +176,15 @@ func (r *upstreamPriceMonitorRepository) SetModelCatalogStatus(
 		}
 	}
 	return nil, errors.New("updated model catalogue row could not be reloaded")
+}
+
+func isDefaultUpstreamPriceDomesticModel(model string) bool {
+	for _, allowed := range domain.DefaultX5M5XDomesticModels {
+		if strings.EqualFold(strings.TrimSpace(model), allowed) {
+			return true
+		}
+	}
+	return false
 }
 
 func syncUpstreamPriceManagedModels(ctx context.Context, tx *sql.Tx) error {

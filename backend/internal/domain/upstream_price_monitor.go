@@ -119,6 +119,11 @@ type UpstreamPriceMonitorConfig struct {
 	PerRequestModels           []string                 `json:"per_request_models"`
 	PassiveSampleMaxAgeMinutes int                      `json:"passive_sample_max_age_minutes"`
 	ActiveProbeEnabled         bool                     `json:"active_probe_enabled"`
+	ActiveOnly                 bool                     `json:"active_only"`
+	ActiveProbeMaxRequests     int                      `json:"active_probe_max_requests_per_model"`
+	ActiveProbeMaxModels       int                      `json:"active_probe_max_models_per_run"`
+	ActiveProbeRunBudgetUSD    float64                  `json:"active_probe_run_budget_usd"`
+	ActiveProbeDailyBudgetUSD  float64                  `json:"active_probe_daily_budget_usd"`
 	UpdatedAt                  time.Time                `json:"updated_at"`
 }
 
@@ -126,13 +131,18 @@ func DefaultUpstreamPriceMonitorConfig() UpstreamPriceMonitorConfig {
 	return UpstreamPriceMonitorConfig{
 		Enabled:                    false,
 		Mode:                       UpstreamPriceMonitorModeObserve,
-		IntervalMinutes:            15,
+		IntervalMinutes:            1440,
 		Markup:                     1.20,
 		DisplayMultiplierDecimals:  3,
 		DomesticModels:             append([]string(nil), DefaultX5M5XDomesticModels...),
 		PerRequestModels:           append([]string(nil), DefaultX5M5XPerRequestModels...),
-		PassiveSampleMaxAgeMinutes: 60,
+		PassiveSampleMaxAgeMinutes: 1440,
 		ActiveProbeEnabled:         false,
+		ActiveOnly:                 true,
+		ActiveProbeMaxRequests:     7,
+		ActiveProbeMaxModels:       19,
+		ActiveProbeRunBudgetUSD:    0.15,
+		ActiveProbeDailyBudgetUSD:  0.20,
 	}
 }
 
@@ -199,6 +209,7 @@ type UpstreamPriceUsageCheckpoint struct {
 // UpstreamPriceVector stores USD prices per one million tokens, or absolute
 // per-request tier prices. Nil means unobserved, never zero.
 type UpstreamPriceVector struct {
+	FixedPerRequest      *float64 `json:"fixed_per_request,omitempty"`
 	InputPerMillion      *float64 `json:"input_per_million,omitempty"`
 	OutputPerMillion     *float64 `json:"output_per_million,omitempty"`
 	CacheWritePerMillion *float64 `json:"cache_write_per_million,omitempty"`
@@ -228,11 +239,13 @@ type UpstreamPriceEvidence struct {
 	DisplayPricesCurrent       UpstreamPriceVector               `json:"display_prices_current"`
 	DisplayMultiplierCurrent   *float64                          `json:"display_multiplier_current,omitempty"`
 	DisplayMultiplierSuggested *float64                          `json:"display_multiplier_suggested,omitempty"`
+	DimensionStatuses          map[string]string                 `json:"dimension_statuses,omitempty"`
 	LastError                  string                            `json:"last_error,omitempty"`
 	CreatedAt                  time.Time                         `json:"created_at"`
 }
 
 type UpstreamPriceObservation struct {
+	Requests            int64
 	InputTokens         int64
 	OutputTokens        int64
 	CacheCreationTokens int64
@@ -265,13 +278,15 @@ type UpstreamPriceMonitorRunPage struct {
 }
 
 type UpstreamPriceMonitorRuntime struct {
-	Status              string     `json:"status"`
-	LastRunAt           *time.Time `json:"last_run_at,omitempty"`
-	NextRunAt           *time.Time `json:"next_run_at,omitempty"`
-	ConsecutiveFailures int        `json:"consecutive_failures"`
-	LastError           string     `json:"last_error,omitempty"`
-	TodayProbeCost      float64    `json:"today_probe_cost"`
-	Coverage            struct {
+	Status                       string     `json:"status"`
+	LastRunAt                    *time.Time `json:"last_run_at,omitempty"`
+	NextRunAt                    *time.Time `json:"next_run_at,omitempty"`
+	ConsecutiveFailures          int        `json:"consecutive_failures"`
+	LastError                    string     `json:"last_error,omitempty"`
+	TodayProbeCost               float64    `json:"today_probe_cost"`
+	CurrentRunProbeCost          float64    `json:"current_run_probe_cost"`
+	RemainingDailyProbeBudgetUSD float64    `json:"remaining_daily_probe_budget_usd"`
+	Coverage                     struct {
 		Trusted int `json:"trusted"`
 		Total   int `json:"total"`
 	} `json:"coverage"`
