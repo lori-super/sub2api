@@ -263,6 +263,10 @@ func TestNotificationEmailRawHTMLVariablesAreTrustedOnlyForHTMLPlaceholders(t *t
 	require.True(t, notificationEmailRawHTMLAllowed(NotificationEmailEventOpsScheduledReport, "report_html"))
 	require.False(t, notificationEmailRawHTMLAllowed(NotificationEmailEventOpsScheduledReport, "recipient_name"))
 	require.False(t, notificationEmailRawHTMLAllowed(NotificationEmailEventOpsAlert, "report_html"))
+	require.True(t, notificationEmailRawHTMLAllowed(NotificationEmailEventUpstreamPriceMonitor, "monitor_price_rows"))
+	require.True(t, notificationEmailRawHTMLAllowed(NotificationEmailEventUpstreamPriceMonitor, "monitor_multiplier_cards"))
+	require.True(t, notificationEmailRawHTMLAllowed(NotificationEmailEventUpstreamPriceMonitor, "monitor_error_card"))
+	require.False(t, notificationEmailRawHTMLAllowed(NotificationEmailEventUpstreamPriceMonitor, "monitor_models"))
 
 	preview, err := renderNotificationEmail(
 		NotificationEmailEventOpsScheduledReport,

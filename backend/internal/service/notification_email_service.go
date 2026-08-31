@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 const (
@@ -370,7 +372,13 @@ func (s *NotificationEmailService) PreviewTemplate(ctx context.Context, input No
 	for key, value := range input.Variables {
 		variables[key] = value
 	}
-	return renderNotificationEmail(normalizedEvent, subject, htmlBody, variables, nil)
+	return renderNotificationEmail(
+		normalizedEvent,
+		subject,
+		htmlBody,
+		variables,
+		notificationEmailSampleRawHTMLVariables(normalizedEvent, normalizedLocale),
+	)
 }
 
 func (s *NotificationEmailService) Send(ctx context.Context, input NotificationEmailSendInput) error {
@@ -765,7 +773,59 @@ func renderNotificationEmailString(event, raw string, variables map[string]strin
 }
 
 func notificationEmailRawHTMLAllowed(event, placeholder string) bool {
-	return event == NotificationEmailEventOpsScheduledReport && placeholder == "report_html"
+	if event == NotificationEmailEventOpsScheduledReport && placeholder == "report_html" {
+		return true
+	}
+	if event != NotificationEmailEventUpstreamPriceMonitor {
+		return false
+	}
+	switch placeholder {
+	case "monitor_price_rows", "monitor_multiplier_cards", "monitor_error_card":
+		return true
+	default:
+		return false
+	}
+}
+
+func notificationEmailSampleRawHTMLVariables(event, locale string) map[string]string {
+	if event != NotificationEmailEventUpstreamPriceMonitor {
+		return nil
+	}
+	normalizedLocale := normalizeNotificationLocale(locale)
+	payload := notificationEmailUpstreamPriceMonitorSamplePayload()
+	return upstreamPriceMonitorNotificationRawHTMLVariables(payload, normalizedLocale)
+}
+
+func notificationEmailUpstreamPriceMonitorSamplePayload() UpstreamPriceMonitorNotificationPayload {
+	oldInput, oldOutput, oldCacheRead := 0.21, 0.84, 0.05
+	measuredInput, measuredOutput, measuredCacheRead := 0.21, 0.84, 0.05
+	suggestedInput, suggestedOutput, suggestedCacheRead := 0.252, 1.008, 0.06
+	oldMultiplier, newMultiplier := 0.1, 0.12
+	return UpstreamPriceMonitorNotificationPayload{
+		RunID:      42,
+		Action:     UpstreamPriceMonitorNotificationApplied,
+		OccurredAt: time.Date(2026, time.August, 31, 1, 2, 3, 0, time.UTC),
+		Models: []UpstreamPriceMonitorNotificationModel{{
+			Model: "MiniMax-M3",
+			OldPrices: domain.UpstreamPriceVector{
+				InputPerMillion:     &oldInput,
+				OutputPerMillion:    &oldOutput,
+				CacheReadPerMillion: &oldCacheRead,
+			},
+			MeasuredPrices: domain.UpstreamPriceVector{
+				InputPerMillion:     &measuredInput,
+				OutputPerMillion:    &measuredOutput,
+				CacheReadPerMillion: &measuredCacheRead,
+			},
+			SuggestedPrices: domain.UpstreamPriceVector{
+				InputPerMillion:     &suggestedInput,
+				OutputPerMillion:    &suggestedOutput,
+				CacheReadPerMillion: &suggestedCacheRead,
+			},
+			DisplayMultiplierCurrent:   &oldMultiplier,
+			DisplayMultiplierSuggested: &newMultiplier,
+		}},
+	}
 }
 
 func notificationEmailAllowedPlaceholderSet(event string) map[string]struct{} {
@@ -999,7 +1059,11 @@ func notificationEmailSampleVariables(locale string) map[string]string {
 
 func addNotificationEmailUpstreamPriceMonitorSampleVariables(variables map[string]string, zh bool) {
 	variables["monitor_action"] = "Pricing suggested"
+	variables["monitor_subject_action"] = "Automatic pricing succeeded"
+	variables["monitor_subject_models"] = "MiniMax-M3"
+	variables["monitor_conclusion"] = "Channel prices for 1 model(s) were updated to measured upstream cost plus 20%."
 	variables["monitor_run_id"] = "42"
+	variables["monitor_model_count"] = "1"
 	variables["monitor_models"] = "MiniMax-M3"
 	variables["monitor_old_prices"] = "MiniMax-M3: input $0.210000/1M; output $0.840000/1M"
 	variables["monitor_measured_prices"] = "MiniMax-M3: input $0.210000/1M; output $0.840000/1M"
@@ -1007,8 +1071,13 @@ func addNotificationEmailUpstreamPriceMonitorSampleVariables(variables map[strin
 	variables["monitor_display_multiplier"] = "MiniMax-M3: 0.120 -> 0.120"
 	variables["monitor_occurred_at"] = "2026-08-31T01:02:03Z"
 	variables["monitor_error"] = "-"
+	variables["monitor_price_rows"] = ""
+	variables["monitor_multiplier_cards"] = ""
+	variables["monitor_error_card"] = ""
 	if zh {
-		variables["monitor_action"] = "建议调价"
+		variables["monitor_action"] = "已应用"
+		variables["monitor_subject_action"] = "自动改价成功"
+		variables["monitor_conclusion"] = "已按上游实测成本上浮 20%，自动更新 1 个模型的渠道售价。"
 		variables["monitor_old_prices"] = "MiniMax-M3: 输入 $0.210000/1M; 输出 $0.840000/1M"
 		variables["monitor_measured_prices"] = "MiniMax-M3: 输入 $0.210000/1M; 输出 $0.840000/1M"
 		variables["monitor_suggested_prices"] = "MiniMax-M3: 输入 $0.252000/1M; 输出 $1.008000/1M"
@@ -1182,9 +1251,11 @@ var notificationEmailEventDefinitions = map[string]NotificationEmailEventInfo{
 		Category:    "ops",
 		Optional:    false,
 		Placeholders: append(append([]string{}, notificationEmailCommonPlaceholders...),
-			"monitor_action", "monitor_run_id", "monitor_models", "monitor_old_prices",
+			"monitor_action", "monitor_subject_action", "monitor_subject_models", "monitor_conclusion",
+			"monitor_run_id", "monitor_model_count", "monitor_models", "monitor_old_prices",
 			"monitor_measured_prices", "monitor_suggested_prices", "monitor_display_multiplier",
-			"monitor_occurred_at", "monitor_error"),
+			"monitor_occurred_at", "monitor_error", "monitor_price_rows", "monitor_multiplier_cards",
+			"monitor_error_card"),
 	},
 }
 
@@ -1472,32 +1543,115 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 	},
 	NotificationEmailEventUpstreamPriceMonitor: {
 		notificationEmailDefaultLocale: {
-			Subject: "[{{site_name}}] Upstream pricing {{monitor_action}} - run #{{monitor_run_id}}",
-			HTML: notificationEmailCard("#2563eb", "Upstream price monitor", `
-<p><strong>Action</strong>: {{monitor_action}}</p>
-<p><strong>Run ID</strong>: {{monitor_run_id}}</p>
-<p><strong>Time</strong>: {{monitor_occurred_at}}</p>
-<p><strong>Models</strong>:</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_models}}</pre>
-<p><strong>Old prices</strong>:</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_old_prices}}</pre>
-<p><strong>Measured prices</strong>:</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_measured_prices}}</pre>
-<p><strong>Suggested prices</strong>:</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_suggested_prices}}</pre>
-<p><strong>Display multiplier</strong>:</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_display_multiplier}}</pre>
-<p><strong>Error</strong>: {{monitor_error}}</p>`),
+			Subject: "[{{site_name}}] {{monitor_subject_action}} · {{monitor_subject_models}}",
+			HTML:    notificationEmailUpstreamPriceMonitorTemplate(false),
 		},
 		notificationEmailLocaleChinese: {
-			Subject: "[{{site_name}}] 上游价格{{monitor_action}} - 运行 #{{monitor_run_id}}",
-			HTML: notificationEmailCard("#2563eb", "上游价格监控通知", `
-<p><strong>动作</strong>：{{monitor_action}}</p>
-<p><strong>运行 ID</strong>：{{monitor_run_id}}</p>
-<p><strong>时间</strong>：{{monitor_occurred_at}}</p>
-<p><strong>模型</strong>：</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_models}}</pre>
-<p><strong>旧价</strong>：</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_old_prices}}</pre>
-<p><strong>实测价</strong>：</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_measured_prices}}</pre>
-<p><strong>建议价</strong>：</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_suggested_prices}}</pre>
-<p><strong>展示倍率</strong>：</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;">{{monitor_display_multiplier}}</pre>
-<p><strong>错误</strong>：{{monitor_error}}</p>`),
+			Subject: "[{{site_name}}] {{monitor_subject_action}} · {{monitor_subject_models}}",
+			HTML:    notificationEmailUpstreamPriceMonitorTemplate(true),
 		},
 	},
+}
+
+func notificationEmailUpstreamPriceMonitorTemplate(zh bool) string {
+	lang, productLabel, runLabel, timeLabel, modelsLabel := "en", "Upstream price monitor", "Run ID", "Time", "Models"
+	priceTitle, multiplierTitle := "Price changes", "Display multiplier"
+	modelHeader, dimensionHeader, oldHeader := "Model", "Dimension", "Old channel price"
+	measuredHeader, suggestedHeader, deltaHeader := "Measured upstream cost", "New price (+20%)", "Change"
+	footer := "This is an automated operations notification from {{site_name}}."
+	if zh {
+		lang, productLabel, runLabel, timeLabel, modelsLabel = "zh-CN", "上游价格监控", "运行 ID", "发生时间", "模型数"
+		priceTitle, multiplierTitle = "价格变更明细", "用户页展示倍率"
+		modelHeader, dimensionHeader, oldHeader = "模型", "维度", "旧渠道售价"
+		measuredHeader, suggestedHeader, deltaHeader = "上游实测成本", "20%上浮后新售价", "变化幅度"
+		footer = "此邮件由 {{site_name}} 自动发送，无需回复。"
+	}
+	return `<!DOCTYPE html>
+<html lang="` + lang + `">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { margin: 0; padding: 24px 12px; background: #f4f7fb; color: #1e293b; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+    .container { width: 100%; max-width: 760px; margin: 0 auto; overflow: hidden; border: 1px solid #dfe6ef; border-radius: 12px; background: #ffffff; }
+    .header { padding: 28px 32px; background: #14213d; color: #ffffff; }
+    .eyebrow { margin: 0 0 12px; color: #bfdbfe; font-size: 12px; font-weight: 700; letter-spacing: .04em; }
+    .status { display: inline-block; margin-bottom: 10px; padding: 5px 10px; border: 1px solid rgba(255,255,255,.28); border-radius: 999px; background: rgba(255,255,255,.10); color: #ffffff; font-size: 12px; font-weight: 700; }
+    h1 { margin: 0; color: #ffffff; font-size: 25px; line-height: 1.3; }
+    .conclusion { margin: 10px 0 0; color: #dbeafe; font-size: 14px; line-height: 1.65; }
+    .content { padding: 28px 32px 32px; }
+    .meta { width: 100%; margin: 0 0 28px; border-collapse: separate; border-spacing: 8px 0; table-layout: fixed; }
+    .meta td { padding: 13px 14px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; vertical-align: top; }
+    .meta-label { display: block; margin-bottom: 5px; color: #64748b; font-size: 11px; font-weight: 700; }
+    .meta-value { display: block; color: #0f172a; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+    .section-title { margin: 0 0 12px; color: #0f172a; font-size: 16px; line-height: 1.4; }
+    .table-wrap { margin-bottom: 28px; overflow-x: auto; border: 1px solid #dfe6ef; border-radius: 8px; }
+    .pricing { width: 100%; border-collapse: collapse; min-width: 690px; }
+    .pricing th { padding: 11px 10px; background: #f1f5f9; color: #475569; font-size: 11px; font-weight: 700; text-align: left; white-space: nowrap; }
+    .pricing td { padding: 12px 10px; border-top: 1px solid #e8edf4; color: #334155; font-size: 12px; vertical-align: middle; }
+    .pricing tr:first-child td { border-top: 0; }
+    .new-price { color: #1d4ed8; }
+    .delta { display: inline-block; padding: 3px 7px; border-radius: 999px; background: #eff6ff; color: #1d4ed8; font-weight: 700; white-space: nowrap; }
+    .multiplier-grid { margin: 0 0 26px; }
+    .multiplier-card { display: table; width: 100%; margin: 0 0 8px; border: 1px solid #bfdbfe; border-radius: 8px; background: #f8fbff; box-sizing: border-box; }
+    .multiplier-model, .multiplier-values { display: table-cell; padding: 14px 16px; vertical-align: middle; }
+    .multiplier-model { color: #334155; font-size: 13px; font-weight: 700; }
+    .multiplier-values { color: #64748b; font-size: 18px; text-align: right; white-space: nowrap; }
+    .multiplier-values strong { color: #1d4ed8; }
+    .arrow { padding: 0 10px; color: #94a3b8; }
+    .empty { padding: 18px !important; color: #64748b !important; text-align: center; }
+    .multiplier-empty { margin-bottom: 24px; border: 1px dashed #cbd5e1; border-radius: 8px; }
+    .error-card { margin-top: 8px; padding: 15px 16px; border: 1px solid #fecaca; border-radius: 8px; background: #fff7f7; }
+    .error-title { margin-bottom: 6px; color: #b91c1c; font-size: 13px; font-weight: 800; }
+    .error-message { color: #7f1d1d; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; word-break: break-word; }
+    .footer { padding: 18px 32px; border-top: 1px solid #e5e7eb; background: #f8fafc; color: #94a3b8; font-size: 12px; text-align: center; }
+    @media only screen and (max-width: 600px) {
+      body { padding: 0; background: #ffffff; }
+      .container { border: 0; border-radius: 0; }
+      .header, .content { padding-left: 20px; padding-right: 20px; }
+      .meta { border-spacing: 0 8px; }
+      .meta, .meta tbody, .meta tr, .meta td { display: block; width: 100%; box-sizing: border-box; }
+      .pricing { min-width: 0; }
+      .pricing thead { display: none; }
+      .pricing, .pricing tbody, .price-row { display: block; width: 100%; }
+      .price-row { padding: 8px 12px; border-top: 8px solid #f1f5f9; box-sizing: border-box; }
+      .price-row:first-child { border-top: 0; }
+      .price-row td { display: flex; width: 100%; padding: 8px 0; border-top: 1px solid #eef2f7; justify-content: space-between; gap: 18px; box-sizing: border-box; text-align: right; }
+      .price-row td:first-child { border-top: 0; }
+      .price-row td:before { content: attr(data-label); flex: 0 0 44%; color: #64748b; font-size: 11px; font-weight: 700; text-align: left; }
+      .multiplier-model, .multiplier-values { display: block; text-align: left; }
+      .multiplier-values { padding-top: 0; }
+      .footer { padding-left: 20px; padding-right: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="eyebrow">` + productLabel + `</div>
+      <div class="status">{{monitor_action}}</div>
+      <h1>{{monitor_subject_action}}</h1>
+      <p class="conclusion">{{monitor_conclusion}}</p>
+    </div>
+    <div class="content">
+      <table class="meta" role="presentation"><tr>
+        <td><span class="meta-label">` + runLabel + `</span><span class="meta-value">#{{monitor_run_id}}</span></td>
+        <td><span class="meta-label">` + timeLabel + `</span><span class="meta-value">{{monitor_occurred_at}}</span></td>
+        <td><span class="meta-label">` + modelsLabel + `</span><span class="meta-value">{{monitor_model_count}}</span></td>
+      </tr></table>
+      <h2 class="section-title">` + priceTitle + `</h2>
+      <div class="table-wrap"><table class="pricing">
+        <thead><tr><th>` + modelHeader + `</th><th>` + dimensionHeader + `</th><th>` + oldHeader + `</th><th>` + measuredHeader + `</th><th>` + suggestedHeader + `</th><th>` + deltaHeader + `</th></tr></thead>
+        <tbody>{{monitor_price_rows}}</tbody>
+      </table></div>
+      <h2 class="section-title">` + multiplierTitle + `</h2>
+      <div class="multiplier-grid">{{monitor_multiplier_cards}}</div>
+      {{monitor_error_card}}
+    </div>
+    <div class="footer">` + footer + `</div>
+  </div>
+</body>
+</html>`
 }
 
 func notificationEmailOpsScheduledReportTemplate(locale string) string {

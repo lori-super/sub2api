@@ -96,7 +96,7 @@ func TestValidateUpstreamPriceApplyEvidenceRejectsZero(t *testing.T) {
 	require.ErrorIs(t, err, service.ErrUpstreamPriceRunNotApplicable)
 }
 
-func TestValidateUpstreamPriceApplyEvidenceCapsAutomaticChanges(t *testing.T) {
+func TestValidateUpstreamPriceApplyEvidenceUsesAuthoritativeUpstreamPrice(t *testing.T) {
 	current, extreme := 1.0, 1.2000001
 	item := upstreamPriceApplyEvidence{
 		Model: "deepseek-auto", BillingMode: service.DisplayBillingModeToken,
@@ -104,12 +104,19 @@ func TestValidateUpstreamPriceApplyEvidenceCapsAutomaticChanges(t *testing.T) {
 		Suggested: domain.UpstreamPriceVector{InputPerMillion: &extreme},
 	}
 	err := validateUpstreamPriceApplyEvidence([]upstreamPriceApplyEvidence{item}, true)
-	require.ErrorIs(t, err, service.ErrUpstreamPriceRunNotApplicable)
+	require.NoError(t, err)
 
 	extreme = 9
 	item.Suggested.InputPerMillion = &extreme
-	require.NoError(t, validateUpstreamPriceApplyEvidence([]upstreamPriceApplyEvidence{item}, false),
-		"manual apply may accept a large positive change")
+	require.NoError(t, validateUpstreamPriceApplyEvidence([]upstreamPriceApplyEvidence{item}, true),
+		"a large positive upstream change must be applied, not blocked")
+
+	current = 0
+	extreme = 0.24
+	item.Current.InputPerMillion = &current
+	item.Suggested.InputPerMillion = &extreme
+	require.NoError(t, validateUpstreamPriceApplyEvidence([]upstreamPriceApplyEvidence{item}, true),
+		"a zero baseline must not block a positive authoritative upstream price")
 }
 
 func TestAssertTokenChannelSnapshotRejectsCASConflict(t *testing.T) {

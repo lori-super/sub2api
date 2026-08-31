@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -121,6 +123,7 @@ func (n *UpstreamPriceMonitorEmailNotifier) send(ctx context.Context, payload Up
 			return
 		}
 		locale := n.sender.ResolveRecipientLocale(ctx, 0, recipient)
+		variables := upstreamPriceMonitorNotificationVariables(payload, locale)
 		if err := n.sender.Send(ctx, NotificationEmailSendInput{
 			Event:          NotificationEmailEventUpstreamPriceMonitor,
 			Locale:         locale,
@@ -129,7 +132,11 @@ func (n *UpstreamPriceMonitorEmailNotifier) send(ctx context.Context, payload Up
 			SourceType:     "upstream_price_monitor",
 			SourceID:       strconv.FormatInt(payload.RunID, 10),
 			ReminderKey:    string(payload.Action),
-			Variables:      upstreamPriceMonitorNotificationVariables(payload, locale),
+			Variables:      variables,
+			RawHTMLVariables: upstreamPriceMonitorNotificationRawHTMLVariables(
+				payload,
+				locale,
+			),
 		}); err != nil {
 			slog.Warn(
 				"upstream price monitor notification delivery failed",
@@ -176,10 +183,7 @@ func (action UpstreamPriceMonitorNotificationAction) valid() bool {
 
 func upstreamPriceMonitorNotificationVariables(payload UpstreamPriceMonitorNotificationPayload, locale string) map[string]string {
 	zh := normalizeNotificationLocale(locale) == notificationEmailLocaleChinese
-	models := append([]UpstreamPriceMonitorNotificationModel(nil), payload.Models...)
-	sort.SliceStable(models, func(i, j int) bool {
-		return strings.ToLower(strings.TrimSpace(models[i].Model)) < strings.ToLower(strings.TrimSpace(models[j].Model))
-	})
+	models := sortedUpstreamPriceMonitorNotificationModels(payload.Models)
 
 	modelNames := make([]string, 0, len(models))
 	oldPrices := make([]string, 0, len(models))
@@ -204,7 +208,11 @@ func upstreamPriceMonitorNotificationVariables(payload UpstreamPriceMonitorNotif
 	}
 	return map[string]string{
 		"monitor_action":             payload.Action.label(zh),
+		"monitor_subject_action":     payload.Action.subjectLabel(zh),
+		"monitor_subject_models":     upstreamPriceMonitorSubjectModels(models, zh),
+		"monitor_conclusion":         payload.Action.conclusion(len(models), zh),
 		"monitor_run_id":             strconv.FormatInt(payload.RunID, 10),
+		"monitor_model_count":        strconv.Itoa(len(models)),
 		"monitor_models":             upstreamPriceMonitorLinesOrDash(modelNames),
 		"monitor_old_prices":         upstreamPriceMonitorLinesOrDash(oldPrices),
 		"monitor_measured_prices":    upstreamPriceMonitorLinesOrDash(measuredPrices),
@@ -213,6 +221,44 @@ func upstreamPriceMonitorNotificationVariables(payload UpstreamPriceMonitorNotif
 		"monitor_occurred_at":        occurredAt.UTC().Format(time.RFC3339),
 		"monitor_error":              sanitizeUpstreamPriceMonitorNotificationError(payload.Error),
 	}
+}
+
+func upstreamPriceMonitorNotificationRawHTMLVariables(payload UpstreamPriceMonitorNotificationPayload, locale string) map[string]string {
+	zh := normalizeNotificationLocale(locale) == notificationEmailLocaleChinese
+	models := sortedUpstreamPriceMonitorNotificationModels(payload.Models)
+	return map[string]string{
+		"monitor_price_rows":       upstreamPriceMonitorPriceRows(models, zh),
+		"monitor_multiplier_cards": upstreamPriceMonitorMultiplierCards(models, zh),
+		"monitor_error_card":       upstreamPriceMonitorErrorCard(payload.Error, zh),
+	}
+}
+
+func sortedUpstreamPriceMonitorNotificationModels(models []UpstreamPriceMonitorNotificationModel) []UpstreamPriceMonitorNotificationModel {
+	sorted := append([]UpstreamPriceMonitorNotificationModel(nil), models...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return strings.ToLower(strings.TrimSpace(sorted[i].Model)) < strings.ToLower(strings.TrimSpace(sorted[j].Model))
+	})
+	return sorted
+}
+
+func upstreamPriceMonitorSubjectModels(models []UpstreamPriceMonitorNotificationModel, zh bool) string {
+	if len(models) == 0 {
+		if zh {
+			return "无模型"
+		}
+		return "No models"
+	}
+	name := strings.TrimSpace(models[0].Model)
+	if name == "" {
+		name = "-"
+	}
+	if len(models) == 1 {
+		return name
+	}
+	if zh {
+		return fmt.Sprintf("%s 等 %d 个模型", name, len(models))
+	}
+	return fmt.Sprintf("%s +%d", name, len(models)-1)
 }
 
 func (action UpstreamPriceMonitorNotificationAction) label(zh bool) string {
@@ -248,6 +294,208 @@ func (action UpstreamPriceMonitorNotificationAction) label(zh bool) string {
 	default:
 		return "unknown"
 	}
+}
+
+func (action UpstreamPriceMonitorNotificationAction) subjectLabel(zh bool) string {
+	if zh {
+		switch action {
+		case UpstreamPriceMonitorNotificationSuggested:
+			return "发现调价建议"
+		case UpstreamPriceMonitorNotificationPartial:
+			return "价格监控部分完成"
+		case UpstreamPriceMonitorNotificationFailed:
+			return "价格监控失败"
+		case UpstreamPriceMonitorNotificationApplied:
+			return "自动改价成功"
+		case UpstreamPriceMonitorNotificationApplyFailed:
+			return "自动改价失败"
+		case UpstreamPriceMonitorNotificationRolledBack:
+			return "价格已回滚"
+		}
+	}
+	switch action {
+	case UpstreamPriceMonitorNotificationSuggested:
+		return "Pricing suggestion"
+	case UpstreamPriceMonitorNotificationPartial:
+		return "Price monitor partially completed"
+	case UpstreamPriceMonitorNotificationFailed:
+		return "Price monitor failed"
+	case UpstreamPriceMonitorNotificationApplied:
+		return "Automatic pricing succeeded"
+	case UpstreamPriceMonitorNotificationApplyFailed:
+		return "Automatic pricing failed"
+	case UpstreamPriceMonitorNotificationRolledBack:
+		return "Pricing rolled back"
+	default:
+		return "Price monitor update"
+	}
+}
+
+func (action UpstreamPriceMonitorNotificationAction) conclusion(modelCount int, zh bool) string {
+	if zh {
+		switch action {
+		case UpstreamPriceMonitorNotificationSuggested:
+			return fmt.Sprintf("检测到 %d 个模型的价格变化，下方为待确认的调价建议。", modelCount)
+		case UpstreamPriceMonitorNotificationPartial:
+			return fmt.Sprintf("本轮已处理 %d 个模型，但有部分结果需要人工检查。", modelCount)
+		case UpstreamPriceMonitorNotificationFailed:
+			return "本轮上游价格监控失败，未自动修改价格。"
+		case UpstreamPriceMonitorNotificationApplied:
+			return fmt.Sprintf("已按上游实测成本上浮 20%%，自动更新 %d 个模型的渠道售价。", modelCount)
+		case UpstreamPriceMonitorNotificationApplyFailed:
+			return "已生成调价方案，但自动应用失败，请查看错误详情。"
+		case UpstreamPriceMonitorNotificationRolledBack:
+			return fmt.Sprintf("已回滚 %d 个模型的渠道售价与展示倍率。", modelCount)
+		}
+	}
+	switch action {
+	case UpstreamPriceMonitorNotificationSuggested:
+		return fmt.Sprintf("Price changes were detected for %d model(s). Review the proposal below.", modelCount)
+	case UpstreamPriceMonitorNotificationPartial:
+		return fmt.Sprintf("This run processed %d model(s), but some results require review.", modelCount)
+	case UpstreamPriceMonitorNotificationFailed:
+		return "This upstream pricing run failed. No automatic price changes were made."
+	case UpstreamPriceMonitorNotificationApplied:
+		return fmt.Sprintf("Channel prices for %d model(s) were updated to measured upstream cost plus 20%%.", modelCount)
+	case UpstreamPriceMonitorNotificationApplyFailed:
+		return "A pricing proposal was produced, but automatic application failed. Review the error below."
+	case UpstreamPriceMonitorNotificationRolledBack:
+		return fmt.Sprintf("Channel prices and display multipliers for %d model(s) were rolled back.", modelCount)
+	default:
+		return "Upstream pricing monitor update."
+	}
+}
+
+type upstreamPriceMonitorDimension struct {
+	zhLabel   string
+	enLabel   string
+	unit      string
+	old       *float64
+	measured  *float64
+	suggested *float64
+}
+
+func upstreamPriceMonitorModelDimensions(model UpstreamPriceMonitorNotificationModel) []upstreamPriceMonitorDimension {
+	return []upstreamPriceMonitorDimension{
+		{zhLabel: "输入", enLabel: "Input", unit: "/ 1M", old: model.OldPrices.InputPerMillion, measured: model.MeasuredPrices.InputPerMillion, suggested: model.SuggestedPrices.InputPerMillion},
+		{zhLabel: "输出", enLabel: "Output", unit: "/ 1M", old: model.OldPrices.OutputPerMillion, measured: model.MeasuredPrices.OutputPerMillion, suggested: model.SuggestedPrices.OutputPerMillion},
+		{zhLabel: "缓存写入", enLabel: "Cache write", unit: "/ 1M", old: model.OldPrices.CacheWritePerMillion, measured: model.MeasuredPrices.CacheWritePerMillion, suggested: model.SuggestedPrices.CacheWritePerMillion},
+		{zhLabel: "缓存读取", enLabel: "Cache read", unit: "/ 1M", old: model.OldPrices.CacheReadPerMillion, measured: model.MeasuredPrices.CacheReadPerMillion, suggested: model.SuggestedPrices.CacheReadPerMillion},
+		{zhLabel: "按次 ≤256K", enLabel: "Per request ≤256K", unit: "/ request", old: model.OldPrices.PerRequestLTE256K, measured: model.MeasuredPrices.PerRequestLTE256K, suggested: model.SuggestedPrices.PerRequestLTE256K},
+		{zhLabel: "按次 256K–512K", enLabel: "Per request 256K–512K", unit: "/ request", old: model.OldPrices.PerRequest256K512K, measured: model.MeasuredPrices.PerRequest256K512K, suggested: model.SuggestedPrices.PerRequest256K512K},
+		{zhLabel: "按次 >512K", enLabel: "Per request >512K", unit: "/ request", old: model.OldPrices.PerRequestGT512K, measured: model.MeasuredPrices.PerRequestGT512K, suggested: model.SuggestedPrices.PerRequestGT512K},
+	}
+}
+
+func upstreamPriceMonitorPriceRows(models []UpstreamPriceMonitorNotificationModel, zh bool) string {
+	var builder strings.Builder
+	for _, model := range models {
+		name := strings.TrimSpace(model.Model)
+		if name == "" {
+			name = "-"
+		}
+		for _, dimension := range upstreamPriceMonitorModelDimensions(model) {
+			if dimension.old == nil && dimension.measured == nil && dimension.suggested == nil {
+				continue
+			}
+			label := dimension.enLabel
+			unit := dimension.unit
+			if zh {
+				label = dimension.zhLabel
+				if unit == "/ request" {
+					unit = "/ 次"
+				}
+			}
+			modelLabel, dimensionLabel, oldLabel, measuredLabel, suggestedLabel, deltaLabel := "Model", "Dimension", "Old channel price", "Measured cost", "New price (+20%)", "Change"
+			if zh {
+				modelLabel, dimensionLabel, oldLabel, measuredLabel, suggestedLabel, deltaLabel = "模型", "维度", "旧渠道售价", "上游实测成本", "20%上浮后新售价", "变化幅度"
+			}
+			_, _ = fmt.Fprintf(&builder, `<tr class="price-row"><td data-label="%s"><strong>%s</strong></td><td data-label="%s">%s</td><td data-label="%s">%s</td><td data-label="%s">%s</td><td data-label="%s"><strong class="new-price">%s</strong></td><td data-label="%s"><span class="delta">%s</span></td></tr>`,
+				html.EscapeString(modelLabel), html.EscapeString(name),
+				html.EscapeString(dimensionLabel), html.EscapeString(label),
+				html.EscapeString(oldLabel), html.EscapeString(formatUpstreamPriceMonitorCellPrice(dimension.old, unit)),
+				html.EscapeString(measuredLabel), html.EscapeString(formatUpstreamPriceMonitorCellPrice(dimension.measured, unit)),
+				html.EscapeString(suggestedLabel), html.EscapeString(formatUpstreamPriceMonitorCellPrice(dimension.suggested, unit)),
+				html.EscapeString(deltaLabel), html.EscapeString(formatUpstreamPriceMonitorDelta(dimension.old, dimension.suggested, zh)),
+			)
+		}
+	}
+	if builder.Len() > 0 {
+		return builder.String()
+	}
+	message := "No comparable price dimensions were returned."
+	if zh {
+		message = "本轮未返回可对比的价格维度。"
+	}
+	return `<tr><td colspan="6" class="empty">` + html.EscapeString(message) + `</td></tr>`
+}
+
+func formatUpstreamPriceMonitorCellPrice(value *float64, unit string) string {
+	if value == nil {
+		return "-"
+	}
+	return "$" + formatUpstreamPriceMonitorNumber(*value) + " " + unit
+}
+
+func formatUpstreamPriceMonitorDelta(old, suggested *float64, zh bool) string {
+	if old == nil || suggested == nil {
+		return "-"
+	}
+	if *old == 0 {
+		if *suggested == 0 {
+			return "0%"
+		}
+		if zh {
+			return "新增"
+		}
+		return "New"
+	}
+	delta := (*suggested - *old) / math.Abs(*old) * 100
+	return strconv.FormatFloat(delta, 'f', 2, 64) + "%"
+}
+
+func upstreamPriceMonitorMultiplierCards(models []UpstreamPriceMonitorNotificationModel, zh bool) string {
+	var builder strings.Builder
+	for _, model := range models {
+		if model.DisplayMultiplierCurrent == nil && model.DisplayMultiplierSuggested == nil {
+			continue
+		}
+		name := strings.TrimSpace(model.Model)
+		if name == "" {
+			name = "-"
+		}
+		oldValue := upstreamPriceMonitorMultiplierValue(model.DisplayMultiplierCurrent)
+		newValue := upstreamPriceMonitorMultiplierValue(model.DisplayMultiplierSuggested)
+		_, _ = fmt.Fprintf(&builder, `<div class="multiplier-card"><div class="multiplier-model">%s</div><div class="multiplier-values"><span>%s</span><span class="arrow">→</span><strong>%s</strong></div></div>`,
+			html.EscapeString(name), html.EscapeString(oldValue), html.EscapeString(newValue))
+	}
+	if builder.Len() > 0 {
+		return builder.String()
+	}
+	message := "No display multiplier change."
+	if zh {
+		message = "本轮无展示倍率变更。"
+	}
+	return `<div class="empty multiplier-empty">` + html.EscapeString(message) + `</div>`
+}
+
+func upstreamPriceMonitorMultiplierValue(value *float64) string {
+	if value == nil {
+		return "-"
+	}
+	return "×" + formatUpstreamPriceMonitorNumber(*value)
+}
+
+func upstreamPriceMonitorErrorCard(raw string, zh bool) string {
+	value := sanitizeUpstreamPriceMonitorNotificationError(raw)
+	if value == "-" {
+		return ""
+	}
+	title := "Error details"
+	if zh {
+		title = "错误详情"
+	}
+	return `<div class="error-card"><div class="error-title">` + html.EscapeString(title) + `</div><div class="error-message">` + html.EscapeString(value) + `</div></div>`
 }
 
 func formatUpstreamPriceMonitorVector(vector domain.UpstreamPriceVector, zh bool) string {
