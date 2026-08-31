@@ -46,3 +46,12 @@ func TestUpstreamPriceMonitorDisplayPriceSnapshotUsesForwardMigration(t *testing
 	require.Contains(t, sql, "add column if not exists display_prices_current jsonb")
 	require.Contains(t, sql, "not null default '{}'::jsonb")
 }
+
+func TestUpstreamPriceMonitorPerRequestScopeUsesForwardMigration(t *testing.T) {
+	raw, err := os.ReadFile("240_upstream_price_monitor_per_request_scope.sql")
+	require.NoError(t, err)
+	sql := strings.ToLower(string(raw))
+	require.Contains(t, sql, "add column if not exists per_request_models text[]")
+	require.Contains(t, sql, "'auto-model'")
+	require.Contains(t, sql, "'gpt-5.6'")
+}

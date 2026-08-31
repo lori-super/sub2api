@@ -77,10 +77,31 @@ var DefaultX5M5XDomesticModels = []string{
 	"MiniMax-M2.7-highspeed",
 	"MiniMax-M3",
 	"qwen3.7-max",
+	"qwen3.8-flash",
 	"qwen3.8-max",
 	"mimo-v2.5",
 	"mimo-v2.5-pro",
 	"hy3",
+}
+
+// DefaultX5M5XPerRequestModels is the independently monitored price-page
+// catalogue. These models do not need to exist on the token-billing account:
+// their authoritative three-tier prices come from the public upstream page.
+var DefaultX5M5XPerRequestModels = []string{
+	"Auto-Model",
+	"deepseek-v4-flash-0731",
+	"deepseek-v4-pro-0813",
+	"glm-5.1",
+	"glm-5.2",
+	"glm-5.3",
+	"glm-5.3-flash",
+	"gpt-5.6",
+	"grok-4.6",
+	"kimi-k2.6",
+	"kimi-k2.7-code",
+	"MiniMax-M2.7",
+	"MiniMax-M2.7-highspeed",
+	"MiniMax-M3",
 }
 
 // UpstreamPriceMonitorConfig is the singleton persisted control-plane
@@ -95,6 +116,7 @@ type UpstreamPriceMonitorConfig struct {
 	AccountIDs                 []int64                  `json:"account_ids"`
 	ChannelIDs                 []int64                  `json:"channel_ids"`
 	DomesticModels             []string                 `json:"domestic_models"`
+	PerRequestModels           []string                 `json:"per_request_models"`
 	PassiveSampleMaxAgeMinutes int                      `json:"passive_sample_max_age_minutes"`
 	ActiveProbeEnabled         bool                     `json:"active_probe_enabled"`
 	UpdatedAt                  time.Time                `json:"updated_at"`
@@ -108,6 +130,7 @@ func DefaultUpstreamPriceMonitorConfig() UpstreamPriceMonitorConfig {
 		Markup:                     1.20,
 		DisplayMultiplierDecimals:  3,
 		DomesticModels:             append([]string(nil), DefaultX5M5XDomesticModels...),
+		PerRequestModels:           append([]string(nil), DefaultX5M5XPerRequestModels...),
 		PassiveSampleMaxAgeMinutes: 60,
 		ActiveProbeEnabled:         false,
 	}

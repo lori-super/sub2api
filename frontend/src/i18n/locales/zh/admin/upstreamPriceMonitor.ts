@@ -92,6 +92,8 @@ export default {
       channelsHint: '自动应用模式会将可信建议价写入这些渠道，并同步用户定价页的展示倍率；观察模式只生成快照。',
       models: '纳管国模',
       modelsHint: '当前付费探价范围（只读），请在下方模型目录中管理。移出探测不会删除渠道价或历史。',
+      perRequestModels: '按次报价页模型',
+      perRequestModelsHint: '这些模型直接读取上游公开三档报价，不要求出现在按量账号中，也不会产生主动探测费用。',
       catalogTitle: '上游支持模型目录',
       catalogHint: '新模型只做发现，所有账号都可见后才可纳管；连续 3 轮且超过 24 小时从全部账号消失才暂停探测，不删除价格和历史。',
       catalogSearch: '搜索模型', catalogAll: '全部状态', catalogStatus: '目录状态', catalogCoverage: '账号覆盖',

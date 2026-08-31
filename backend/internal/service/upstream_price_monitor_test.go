@@ -16,7 +16,10 @@ func TestDefaultUpstreamPriceMonitorConfigIsDisabledObserveOnly(t *testing.T) {
 	require.Equal(t, domain.UpstreamPriceMonitorModeObserve, cfg.Mode)
 	require.Equal(t, 15, cfg.IntervalMinutes)
 	require.InDelta(t, 1.20, cfg.Markup, 1e-12)
-	require.Len(t, cfg.DomesticModels, 18)
+	require.Len(t, cfg.DomesticModels, 19)
+	require.Contains(t, cfg.DomesticModels, "qwen3.8-flash")
+	require.Len(t, cfg.PerRequestModels, 14)
+	require.Contains(t, cfg.PerRequestModels, "Auto-Model")
 	require.NoError(t, normalizeAndValidateUpstreamPriceMonitorConfig(&cfg))
 }
 
@@ -28,6 +31,14 @@ func TestNormalizeUpstreamPriceMonitorConfigAcceptsExplicitlyManagedNewModel(t *
 
 	cfg.DomesticModels = []string{"invalid model"}
 	require.ErrorIs(t, normalizeAndValidateUpstreamPriceMonitorConfig(&cfg), ErrUpstreamPriceMonitorInvalidConfig)
+}
+
+func TestNormalizeUpstreamPriceMonitorConfigKeepsIndependentPerRequestScope(t *testing.T) {
+	cfg := domain.DefaultUpstreamPriceMonitorConfig()
+	cfg.DomesticModels = []string{"MiniMax-M3"}
+	cfg.PerRequestModels = []string{"gpt-5.6", "Auto-Model"}
+	require.NoError(t, normalizeAndValidateUpstreamPriceMonitorConfig(&cfg))
+	require.Equal(t, []string{"Auto-Model", "gpt-5.6"}, cfg.PerRequestModels)
 }
 
 func TestNormalizeUpstreamPriceMonitorConfigPreservesExplicitEmptyScope(t *testing.T) {

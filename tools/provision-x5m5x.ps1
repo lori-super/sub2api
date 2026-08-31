@@ -337,8 +337,8 @@ function ConvertFrom-UpstreamPricingHtml {
     Assert-UniqueModels -Models $tokenModels -Label 'Upstream token pricing'
     Assert-UniqueModels -Models $perRequestModels -Label 'Upstream per-request pricing'
     Assert-UniqueModels -Models $imageModels -Label 'Upstream image pricing'
-    if ($tokenModels.Count -ne 33 -or $perRequestModels.Count -ne 14 -or $imageModels.Count -ne 1) {
-        throw "Upstream pricing catalogue count mismatch: expected 33/14/1, got $($tokenModels.Count)/$($perRequestModels.Count)/$($imageModels.Count). Refusing to provision incomplete pricing."
+    if ($tokenModels.Count -ne 34 -or $perRequestModels.Count -ne 14 -or $imageModels.Count -ne 1) {
+        throw "Upstream pricing catalogue count mismatch: expected 34/14/1, got $($tokenModels.Count)/$($perRequestModels.Count)/$($imageModels.Count). Refusing to provision incomplete pricing."
     }
     $plainPage = ConvertFrom-HtmlText -Value $Html
     if ($plainPage -notmatch '(?is)DeepSeek.*?09:00\s*[–—-]\s*12:00.*?14:00\s*[–—-]\s*18:00.*?(?:×|x)\s*2') {
@@ -848,7 +848,7 @@ try {
         Write-Host '[DRY-RUN] Upstream /models verification skipped because no model fixtures or keys are used.'
     }
 
-    Assert-ModelSetMatchesPricing -Actual $tokenModelNames -PricingModels $tokenModels -ExpectedCount 33 -Label 'Token'
+    Assert-ModelSetMatchesPricing -Actual $tokenModelNames -PricingModels $tokenModels -ExpectedCount 34 -Label 'Token'
     Assert-ModelSetMatchesPricing -Actual $perRequestModelNames -PricingModels $perRequestModels -ExpectedCount 14 -Label 'Per-request'
     Assert-ModelSetMatchesPricing -Actual $imageModelNames -PricingModels $imageModels -ExpectedCount 1 -Label 'Image'
 

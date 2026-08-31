@@ -13,7 +13,7 @@ const tokenModelNames = [
   'gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra',
   'grok-4.5', 'grok-4.6', 'hy3', 'kimi-k2.6', 'kimi-k2.7-code', 'kimi-k3',
   'mimo-v2.5', 'mimo-v2.5-pro', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M3',
-  'qwen3.7-max', 'qwen3.8-max'
+  'qwen3.7-max', 'qwen3.8-flash', 'qwen3.8-max'
 ]
 
 const perRequestModelNames = [
@@ -191,7 +191,7 @@ function previewChannel(id, name, description, groupId, modelPricing, mappingMod
 }
 
 const previewChannels = [
-  previewChannel(1, 'x5m5x-payg-channel', '按量渠道 · 33 个模型', 2, tokenChannelPricing, tokenModelNames),
+  previewChannel(1, 'x5m5x-payg-channel', '按量渠道 · 34 个模型', 2, tokenChannelPricing, tokenModelNames),
   previewChannel(2, 'x5m5x-per-request-channel', '按次渠道 · 14 个模型', 3, requestChannelPricing, perRequestModelNames),
   previewChannel(3, 'x5m5x-image-channel', '生图渠道 · 1 个模型', 4, imageChannelPricing, ['gpt-image-2'])
 ]

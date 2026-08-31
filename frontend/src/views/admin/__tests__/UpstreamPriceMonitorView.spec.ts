@@ -48,6 +48,7 @@ const config = {
   account_ids: [7],
   channel_ids: [3],
   domestic_models: ['deepseek-v4-flash-0731'],
+  per_request_models: ['deepseek-v4-flash-0731'],
   passive_sample_max_age_minutes: 60,
   active_probe_enabled: true,
 }
@@ -202,6 +203,7 @@ describe('UpstreamPriceMonitorView', () => {
       account_ids: [7],
       channel_ids: [3],
       domestic_models: ['deepseek-v4-flash-0731'],
+      per_request_models: ['deepseek-v4-flash-0731'],
     }))
     expect(JSON.stringify(api.updateConfig.mock.calls[0]?.[0])).not.toContain('api_key')
     wrapper.unmount()
