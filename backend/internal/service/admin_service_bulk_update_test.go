@@ -387,6 +387,21 @@ func TestAdminServiceBulkUpdateAccounts_EmbeddingsOnlyResetsResponsesMode(t *tes
 	require.Nil(t, repo.lastBulkUpdate.Extra["openai_responses_mode"])
 }
 
+func TestAdminServiceBulkUpdateAccounts_AcceptsAdaptiveResponsesMode(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{getByIDsAccounts: []*Account{{
+		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+	}}}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	_, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{1},
+		Extra:      map[string]any{"openai_responses_mode": "adaptive"},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "adaptive", repo.lastBulkUpdate.Extra["openai_responses_mode"])
+}
+
 func TestAdminServiceBulkUpdateAccounts_RejectsInvalidOpenAISettingValuesBeforeWrite(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -42,6 +42,11 @@ const (
 	// ResponsesSupportModeAuto 表示跟随自动探测结果。
 	ResponsesSupportModeAuto ResponsesSupportMode = "auto"
 
+	// ResponsesSupportModeAdaptive 表示按入站协议使用同名上游端点：
+	// Chat Completions 直转 /v1/chat/completions，Responses 直转
+	// /v1/responses。仅当目标端点明确不存在时才允许协议回退。
+	ResponsesSupportModeAdaptive ResponsesSupportMode = "adaptive"
+
 	// ResponsesSupportModeForceResponses 强制使用 /v1/responses。
 	ResponsesSupportModeForceResponses ResponsesSupportMode = "force_responses"
 
@@ -50,8 +55,8 @@ const (
 )
 
 // ExtraKeyResponsesMode 是 accounts.extra JSON 中存储手动覆盖模式的键名。
-// 值类型为 string：auto=跟随探测，force_responses=强制 Responses，
-// force_chat_completions=强制 Chat Completions。
+// 值类型为 string：auto=跟随探测，adaptive=按入站协议原样转发，
+// force_responses=强制 Responses，force_chat_completions=强制 Chat Completions。
 const ExtraKeyResponsesMode = "openai_responses_mode"
 
 // ExtraKeyResponsesSupported 是 accounts.extra JSON 中存储自动探测结果的键名。
@@ -62,6 +67,8 @@ const ExtraKeyResponsesSupported = "openai_responses_supported"
 // 缺失或非法值按 auto 处理，以保持存量行为。
 func NormalizeResponsesSupportMode(mode string) ResponsesSupportMode {
 	switch ResponsesSupportMode(mode) {
+	case ResponsesSupportModeAdaptive:
+		return ResponsesSupportModeAdaptive
 	case ResponsesSupportModeForceResponses:
 		return ResponsesSupportModeForceResponses
 	case ResponsesSupportModeForceChatCompletions:
@@ -81,6 +88,10 @@ func ResolveResponsesSupport(extra map[string]any) AccountResponsesSupport {
 	}
 	if mode, ok := extra[ExtraKeyResponsesMode].(string); ok {
 		switch NormalizeResponsesSupportMode(mode) {
+		case ResponsesSupportModeAdaptive:
+			// 自适应账号必须保留原生 Responses 调度资格；Chat 请求会在
+			// Chat 入口单独选择原生 Chat 端点。
+			return ResponsesSupportYes
 		case ResponsesSupportModeForceResponses:
 			return ResponsesSupportYes
 		case ResponsesSupportModeForceChatCompletions:
@@ -112,4 +123,15 @@ func ResolveResponsesSupport(extra map[string]any) AccountResponsesSupport {
 // （详见 internal/service/openai_gateway_chat_completions_raw.go）。
 func ShouldUseResponsesAPI(extra map[string]any) bool {
 	return ResolveResponsesSupport(extra) != ResponsesSupportNo
+}
+
+// ShouldUseAdaptiveProtocol 报告通用 OpenAI API Key 账号是否应按入站协议
+// 选择同名上游端点。该模式独立于自动探测结果，避免探针把双协议上游收敛成
+// 单一 Responses 或 Chat 路径。
+func ShouldUseAdaptiveProtocol(extra map[string]any) bool {
+	if extra == nil {
+		return false
+	}
+	mode, ok := extra[ExtraKeyResponsesMode].(string)
+	return ok && NormalizeResponsesSupportMode(mode) == ResponsesSupportModeAdaptive
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
 )
 
 // Forward forwards request to OpenAI API
@@ -1037,6 +1038,15 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 			upstreamCode := extractUpstreamErrorCode(respBody)
+			if isGenericOpenAIAdaptiveAccount(account) &&
+				!isOpenAIResponsesCompactPath(c) &&
+				isOpenAIProtocolEndpointUnavailable(resp.StatusCode, respBody) {
+				logger.L().Info("openai adaptive: responses endpoint unavailable, retrying via chat completions",
+					zap.Int64("account_id", account.ID),
+					zap.Int("upstream_status", resp.StatusCode),
+				)
+				return s.forwardResponsesViaRawChatCompletions(ctx, c, account, body)
+			}
 			if !agentTaskRecoveryTried && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
 				agentTaskRecoveryTried = true
 				expectedTaskID := account.GetCredential("task_id")
@@ -1423,6 +1433,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// Ensure required headers exist
 	if req.Header.Get("content-type") == "" {
 		req.Header.Set("content-type", "application/json")
+	}
+	if isX5M5XOpenAIAPIKeyAccount(account) {
+		applyX5M5XCacheIdentity(req.Header, x5M5XCacheIdentity(c, account, body))
 	}
 
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）

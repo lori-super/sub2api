@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
@@ -28,6 +30,24 @@ func adaptiveProtocolTestAccount(platform string, baseURLs map[string]any) *Acco
 			"api_protocol":  APIProtocolAdaptive,
 			"account_mode":  AccountModePayG,
 			"api_base_urls": baseURLs,
+		},
+	}
+}
+
+func genericOpenAIAdaptiveTestAccount(baseURL string) *Account {
+	return &Account{
+		ID:          702,
+		Name:        "adaptive-openai-compatible",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": baseURL,
+		},
+		Extra: map[string]any{
+			openai_compat.ExtraKeyResponsesMode:      string(openai_compat.ResponsesSupportModeAdaptive),
+			openai_compat.ExtraKeyResponsesSupported: false,
 		},
 	}
 }
@@ -182,6 +202,82 @@ func TestAdaptiveProtocolRoutesDeepSeekResponsesToNativeResponses(t *testing.T) 
 	require.False(t, gjson.GetBytes(upstream.lastBody, "previous_response_id").Exists())
 	require.Equal(t, int64(32), gjson.GetBytes(upstream.lastBody, "max_output_tokens").Int())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "instructions").Exists())
+}
+
+func TestGenericOpenAIAdaptiveRoutesChatToNativeChat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	upstream := &httpUpstreamRecorder{err: errors.New("stop after capture")}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := genericOpenAIAdaptiveTestAccount("http://openai-compatible.example/v1")
+
+	_, err := svc.ForwardAsChatCompletions(context.Background(), adaptiveProtocolTestContext("/v1/chat/completions", body), account, body, "", "")
+
+	require.Error(t, err)
+	require.Equal(t, "http://openai-compatible.example/v1/chat/completions", upstream.lastReq.URL.String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "messages").IsArray())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
+}
+
+func TestGenericOpenAIAdaptiveRoutesResponsesNativelyAndPreservesCacheFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"glm-5.2","input":"hello","prompt_cache_key":"cache-123","previous_response_id":"resp_123","store":true,"stream":false}`)
+	upstream := &httpUpstreamRecorder{err: errors.New("stop after capture")}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := genericOpenAIAdaptiveTestAccount("http://openai-compatible.example/v1")
+
+	_, err := svc.Forward(context.Background(), adaptiveProtocolTestContext("/v1/responses", body), account, body)
+
+	require.Error(t, err)
+	require.Equal(t, "http://openai-compatible.example/v1/responses", upstream.lastReq.URL.String())
+	require.Equal(t, "cache-123", gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+	require.Equal(t, "resp_123", gjson.GetBytes(upstream.lastBody, "previous_response_id").String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "store").Bool())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "messages").Exists())
+}
+
+func TestGenericOpenAIAdaptiveChatFallsBackToResponsesOnlyForMissingEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusNotFound, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"type":"route_not_found","message":"Not Found"}}`))},
+		{StatusCode: http.StatusBadGateway, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"type":"upstream_error","message":"stop after capture"}}`))},
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := genericOpenAIAdaptiveTestAccount("http://openai-compatible.example/v1")
+
+	_, err := svc.ForwardAsChatCompletions(context.Background(), adaptiveProtocolTestContext("/v1/chat/completions", body), account, body, "", "")
+
+	require.Error(t, err)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "http://openai-compatible.example/v1/chat/completions", upstream.requests[0].URL.String())
+	require.Equal(t, "http://openai-compatible.example/v1/responses", upstream.requests[1].URL.String())
+}
+
+func TestGenericOpenAIAdaptiveResponsesFallsBackToChatOnlyForMissingEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"glm-5.2","input":"hello","stream":false}`)
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusNotFound, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"type":"route_not_found","message":"Not Found"}}`))},
+		{StatusCode: http.StatusBadGateway, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"type":"upstream_error","message":"stop after capture"}}`))},
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := genericOpenAIAdaptiveTestAccount("http://openai-compatible.example/v1")
+
+	_, err := svc.Forward(context.Background(), adaptiveProtocolTestContext("/v1/responses", body), account, body)
+
+	require.Error(t, err)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "http://openai-compatible.example/v1/responses", upstream.requests[0].URL.String())
+	require.Equal(t, "http://openai-compatible.example/v1/chat/completions", upstream.requests[1].URL.String())
+}
+
+func TestOpenAIProtocolEndpointUnavailableDoesNotTreatModel404AsRouteFailure(t *testing.T) {
+	require.False(t, isOpenAIProtocolEndpointUnavailable(http.StatusNotFound, []byte(`{"error":{"type":"model_not_found","message":"model is not supported"}}`)))
+	require.True(t, isOpenAIProtocolEndpointUnavailable(http.StatusNotFound, []byte(`{"error":{"type":"route_not_found","message":"Not Found"}}`)))
+	require.True(t, isOpenAIProtocolEndpointUnavailable(http.StatusMethodNotAllowed, nil))
+	require.False(t, isOpenAIProtocolEndpointUnavailable(http.StatusBadGateway, nil))
 }
 
 func TestFixedCNChatProtocolOverridesStaleResponsesMode(t *testing.T) {

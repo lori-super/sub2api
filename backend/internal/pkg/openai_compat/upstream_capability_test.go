@@ -16,6 +16,7 @@ func TestResolveResponsesSupport(t *testing.T) {
 		{"value wrong type string", map[string]any{ExtraKeyResponsesSupported: "true"}, ResponsesSupportUnknown},
 		{"value wrong type number", map[string]any{ExtraKeyResponsesSupported: 1}, ResponsesSupportUnknown},
 		{"value nil", map[string]any{ExtraKeyResponsesSupported: nil}, ResponsesSupportUnknown},
+		{"adaptive", map[string]any{ExtraKeyResponsesMode: string(ResponsesSupportModeAdaptive)}, ResponsesSupportYes},
 		{"force responses", map[string]any{ExtraKeyResponsesMode: string(ResponsesSupportModeForceResponses)}, ResponsesSupportYes},
 		{"force chat completions", map[string]any{ExtraKeyResponsesMode: string(ResponsesSupportModeForceChatCompletions)}, ResponsesSupportNo},
 		{"auto follows probe", map[string]any{ExtraKeyResponsesMode: string(ResponsesSupportModeAuto), ExtraKeyResponsesSupported: false}, ResponsesSupportNo},
@@ -50,6 +51,7 @@ func TestShouldUseResponsesAPI(t *testing.T) {
 		{"explicitly unsupported", map[string]any{ExtraKeyResponsesSupported: false}, false},
 
 		// 手动覆盖：覆盖自动探测结果
+		{"adaptive overrides unsupported probe", map[string]any{ExtraKeyResponsesMode: string(ResponsesSupportModeAdaptive), ExtraKeyResponsesSupported: false}, true},
 		{"force responses overrides unsupported probe", map[string]any{ExtraKeyResponsesMode: string(ResponsesSupportModeForceResponses), ExtraKeyResponsesSupported: false}, true},
 		{"force chat completions overrides supported probe", map[string]any{ExtraKeyResponsesMode: string(ResponsesSupportModeForceChatCompletions), ExtraKeyResponsesSupported: true}, false},
 	}
@@ -72,6 +74,7 @@ func TestNormalizeResponsesSupportMode(t *testing.T) {
 	}{
 		{"empty", "", ResponsesSupportModeAuto},
 		{"auto", "auto", ResponsesSupportModeAuto},
+		{"adaptive", "adaptive", ResponsesSupportModeAdaptive},
 		{"force responses", "force_responses", ResponsesSupportModeForceResponses},
 		{"force chat completions", "force_chat_completions", ResponsesSupportModeForceChatCompletions},
 		{"invalid", "enabled", ResponsesSupportModeAuto},
@@ -84,5 +87,20 @@ func TestNormalizeResponsesSupportMode(t *testing.T) {
 				t.Errorf("NormalizeResponsesSupportMode(%q) = %q, want %q", tc.mode, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestShouldUseAdaptiveProtocol(t *testing.T) {
+	if ShouldUseAdaptiveProtocol(nil) {
+		t.Fatal("nil extra must not enable adaptive protocol")
+	}
+	if ShouldUseAdaptiveProtocol(map[string]any{ExtraKeyResponsesMode: "auto"}) {
+		t.Fatal("auto mode must not enable protocol passthrough")
+	}
+	if !ShouldUseAdaptiveProtocol(map[string]any{
+		ExtraKeyResponsesMode:      string(ResponsesSupportModeAdaptive),
+		ExtraKeyResponsesSupported: false,
+	}) {
+		t.Fatal("adaptive mode must override the probe result")
 	}
 }
