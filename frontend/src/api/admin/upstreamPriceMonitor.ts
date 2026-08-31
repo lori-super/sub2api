@@ -177,15 +177,7 @@ export async function getConfig(options?: { signal?: AbortSignal }): Promise<Ups
 export async function updateConfig(
   config: UpstreamPriceMonitorConfig,
 ): Promise<UpstreamPriceMonitorConfig> {
-  // First-release safety belt: the UI/API client cannot opt into billable
-  // active probes or automatic price mutation before the guarded rollout is
-  // explicitly enabled server-side.
-  const observeOnlyConfig: UpstreamPriceMonitorConfig = {
-    ...config,
-    mode: 'observe',
-    active_probe_enabled: false,
-  }
-  const { data } = await apiClient.put<UpstreamPriceMonitorConfig>(`${basePath}/config`, observeOnlyConfig)
+  const { data } = await apiClient.put<UpstreamPriceMonitorConfig>(`${basePath}/config`, config)
   return data
 }
 

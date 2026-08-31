@@ -825,12 +825,14 @@ func ProvideUpstreamPriceMonitorService(
 	concurrency *ConcurrencyService,
 	pricePage UpstreamPricePageFetcher,
 	channels *ChannelService,
+	notifier UpstreamPriceMonitorNotifier,
 ) *UpstreamPriceMonitorService {
 	svc := NewUpstreamPriceMonitorService(repo, accounts, remote)
 	svc.SetActiveProber(activeProber)
 	svc.SetProbeConcurrencyService(concurrency)
 	svc.SetPricePageFetcher(pricePage)
 	svc.SetPricingCacheInvalidator(channels)
+	svc.SetNotifier(notifier)
 	return svc
 }
 
@@ -919,6 +921,8 @@ var ProviderSet = wire.NewSet(
 	ProvideOpsScheduledReportService,
 	NewEmailService,
 	NewNotificationEmailService,
+	NewUpstreamPriceMonitorEmailNotifier,
+	wire.Bind(new(UpstreamPriceMonitorNotifier), new(*UpstreamPriceMonitorEmailNotifier)),
 	ProvideEmailQueueService,
 	NewTurnstileService,
 	NewTencentCaptchaService,

@@ -1,18 +1,28 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
-type rolloutLockedMonitorRepository struct {
+type runActionMonitorRepository struct {
 	service.UpstreamPriceMonitorRepository
+}
+
+func (r *runActionMonitorRepository) GetRun(context.Context, int64) (*domain.UpstreamPriceMonitorRun, error) {
+	return nil, service.ErrUpstreamPriceRunNotApplicable
+}
+
+func (r *runActionMonitorRepository) RollbackRun(context.Context, int64, string) error {
+	return service.ErrUpstreamPriceRunNotApplicable
 }
 
 func TestUpstreamPriceMonitorManualRunRejectsNonDryRun(t *testing.T) {
@@ -40,27 +50,27 @@ func TestUpstreamPriceMonitorManualRunRejectsNonDryRun(t *testing.T) {
 	}
 }
 
-func TestUpstreamPriceMonitorRunActionsReturnIndependentRolloutLocks(t *testing.T) {
+func TestUpstreamPriceMonitorRunActionsReachTheService(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	monitor := service.NewUpstreamPriceMonitorService(&rolloutLockedMonitorRepository{}, nil, nil)
+	monitor := service.NewUpstreamPriceMonitorService(&runActionMonitorRepository{}, nil, nil)
 	handler := NewUpstreamPriceMonitorHandler(monitor)
 	router := gin.New()
 	router.POST("/runs/:id/apply", handler.ApplyRun)
 	router.POST("/runs/:id/rollback", handler.RollbackRun)
 
 	for _, tc := range []struct {
-		path   string
-		reason string
+		path string
 	}{
-		{path: "/runs/7/apply", reason: "UPSTREAM_PRICE_APPLY_ROLLOUT_LOCKED"},
-		{path: "/runs/7/rollback", reason: "UPSTREAM_PRICE_ROLLBACK_ROLLOUT_LOCKED"},
+		{path: "/runs/7/apply"},
+		{path: "/runs/7/rollback"},
 	} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(`{"snapshot_hash":"snapshot"}`))
 		request.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(recorder, request)
 
-		require.Equal(t, http.StatusBadRequest, recorder.Code)
-		require.Contains(t, recorder.Body.String(), tc.reason)
+		require.Equal(t, http.StatusConflict, recorder.Code)
+		require.Contains(t, recorder.Body.String(), "UPSTREAM_PRICE_RUN_NOT_APPLICABLE")
+		require.NotContains(t, recorder.Body.String(), "ROLLOUT_LOCKED")
 	}
 }

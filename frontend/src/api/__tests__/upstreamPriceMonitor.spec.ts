@@ -37,11 +37,7 @@ describe('upstream price monitor API', () => {
     await expect(upstreamPriceMonitorAPI.updateConfig(config)).resolves.toEqual(config)
 
     expect(get).toHaveBeenCalledWith('/admin/upstream-price-monitor/config', { signal: undefined })
-    expect(put).toHaveBeenCalledWith('/admin/upstream-price-monitor/config', {
-      ...config,
-      mode: 'observe',
-      active_probe_enabled: false,
-    })
+    expect(put).toHaveBeenCalledWith('/admin/upstream-price-monitor/config', config)
   })
 
   it('always creates a manual dry run and applies by snapshot hash', async () => {
