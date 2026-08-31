@@ -86,6 +86,14 @@ describe('ModelPlazaContent billing sections', () => {
         header.classes().includes('bg-[#f7f9ff]')
       )
     ).toBe(true)
+
+    const responsiveLayout = wrapper.get('[data-testid="model-plaza-responsive-layout"]')
+    expect(responsiveLayout.classes()).toEqual(
+      expect.arrayContaining(['min-w-0', 'grid-cols-1', 'lg:grid-cols-[270px_minmax(0,1fr)]'])
+    )
+    expect(wrapper.get('[data-testid="model-plaza-results"]').classes()).toEqual(
+      expect.arrayContaining(['min-w-0', 'max-w-full'])
+    )
   })
 
   it('splits a provider by model currency so the price symbol cannot be mislabeled', () => {
