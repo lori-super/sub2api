@@ -314,9 +314,9 @@ func (r *upstreamPriceMonitorRepository) ApplyRun(
 		}
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE upstream_price_monitor_runs SET applied_at=NOW(),rollback_available=$4,
-		rollback_snapshot=CASE WHEN $4 THEN $2 ELSE NULL END,
+		rollback_snapshot=CASE WHEN $4 THEN $2::jsonb ELSE NULL END,
 		summary=jsonb_set(summary,'{applied_models}',to_jsonb($3::int),true)
-		WHERE id=$1 AND applied_at IS NULL`, runID, rawSnapshot, appliedModels, changedAny)
+		WHERE id=$1 AND applied_at IS NULL`, runID, string(rawSnapshot), appliedModels, changedAny)
 	if err != nil {
 		return err
 	}
