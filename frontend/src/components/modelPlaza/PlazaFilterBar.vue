@@ -1,20 +1,50 @@
 <template>
-  <aside class="sticky top-4 overflow-hidden rounded-lg border border-[#dce3f7] bg-white shadow-none dark:border-dark-700 dark:bg-dark-900">
+  <aside
+    data-testid="model-plaza-filter"
+    class="relative w-full min-w-0 max-w-full overflow-hidden rounded-lg border border-[#dce3f7] bg-white shadow-none dark:border-dark-700 dark:bg-dark-900 lg:sticky lg:top-4"
+  >
     <div class="flex items-center justify-between border-b border-[#e9edf7] px-4 py-4 dark:border-dark-700/70">
-      <div class="flex items-center gap-2">
+      <button
+        type="button"
+        class="flex min-w-0 flex-1 items-center justify-between gap-3 text-left lg:hidden"
+        :aria-expanded="filtersOpen"
+        aria-controls="model-plaza-filter-content"
+        data-testid="mobile-filter-toggle"
+        @click="filtersOpen = !filtersOpen"
+      >
+        <span class="flex min-w-0 items-center gap-2">
+          <Icon name="filter" size="sm" class="shrink-0 text-[#315bd6] dark:text-blue-300" />
+          <span class="truncate font-bold text-[#25315f] dark:text-white">{{ t('modelPlaza.filters.title') }}</span>
+        </span>
+        <svg
+          viewBox="0 0 20 20"
+          fill="none"
+          aria-hidden="true"
+          class="h-5 w-5 shrink-0 text-[#7c88a4] transition-transform duration-200"
+          :class="filtersOpen ? 'rotate-180' : ''"
+        >
+          <path d="m5 7.5 5 5 5-5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+      <div class="hidden items-center gap-2 lg:flex">
         <Icon name="filter" size="sm" class="text-[#315bd6] dark:text-blue-300" />
         <h2 class="font-bold text-[#25315f] dark:text-white">{{ t('modelPlaza.filters.title') }}</h2>
       </div>
       <button
         type="button"
-        class="text-xs font-medium text-[#7c88a4] transition hover:text-[#315bd6] dark:text-dark-500 dark:hover:text-blue-300"
+        class="ml-3 shrink-0 text-xs font-medium text-[#7c88a4] transition hover:text-[#315bd6] dark:text-dark-500 dark:hover:text-blue-300"
         @click="$emit('reset')"
       >
         {{ t('modelPlaza.filters.reset') }}
       </button>
     </div>
 
-    <div class="space-y-5 p-4">
+    <div
+      id="model-plaza-filter-content"
+      data-testid="model-plaza-filter-content"
+      class="space-y-5 p-4 lg:block"
+      :class="filtersOpen ? 'block' : 'hidden'"
+    >
       <section>
         <div class="mb-2.5 flex items-center gap-2">
           <span class="h-px flex-1 bg-[#e9edf7] dark:bg-dark-700"></span>
@@ -161,6 +191,7 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import ProviderLogo from './ProviderLogo.vue'
@@ -193,6 +224,7 @@ defineEmits<{
 }>()
 
 const { t } = useI18n()
+const filtersOpen = ref(false)
 
 function providerButtonClass(active: boolean): string {
   return active

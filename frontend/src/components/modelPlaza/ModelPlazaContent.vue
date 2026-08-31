@@ -1,5 +1,5 @@
 <template>
-  <div class="space-y-5">
+  <div class="model-plaza-content min-w-0 max-w-full space-y-5">
     <section
       data-testid="catalog-hero"
       class="relative overflow-hidden rounded-xl border border-[#202b51] bg-[#121a35] px-5 py-6 text-white shadow-[0_20px_50px_rgba(20,29,70,0.18)] dark:border-[#31406f] dark:bg-[#0b1228] sm:px-7 sm:py-7"
@@ -46,7 +46,11 @@
       {{ t('modelPlaza.loadFailed') }}
     </div>
 
-    <div v-else class="grid items-start gap-5 lg:grid-cols-[270px_minmax(0,1fr)]">
+    <div
+      v-else
+      data-testid="model-plaza-responsive-layout"
+      class="grid min-w-0 grid-cols-1 items-start gap-5 lg:grid-cols-[270px_minmax(0,1fr)]"
+    >
       <PlazaFilterBar
         :billing-options="billingOptions"
         :billing-mode="selectedBillingMode"
@@ -64,13 +68,13 @@
         @refresh="$emit('refresh')"
       />
 
-      <div ref="resultsEl" class="min-w-0 scroll-mt-4">
+      <div ref="resultsEl" data-testid="model-plaza-results" class="min-w-0 max-w-full scroll-mt-4">
         <div v-if="filteredBillingRegions.length > 0" class="space-y-8">
           <section
             v-for="region in filteredBillingRegions"
             :key="region.billingMode"
             :data-billing-mode="region.billingMode"
-            class="scroll-mt-4"
+            class="min-w-0 max-w-full scroll-mt-4"
           >
             <header
               data-testid="billing-region-header"
@@ -397,3 +401,11 @@ watch(providerOptions, (providers) => {
   }
 })
 </script>
+
+<style scoped>
+@media (max-width: 768px) {
+  .model-plaza-content {
+    padding-bottom: max(5rem, env(safe-area-inset-bottom, 0px));
+  }
+}
+</style>

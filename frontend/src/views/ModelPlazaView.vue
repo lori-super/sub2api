@@ -3,7 +3,7 @@
     <ModelPlazaContent v-bind="contentProps" embedded @refresh="loadData(false)" />
   </AppLayout>
 
-  <div v-else class="min-h-screen bg-gray-50 text-gray-900 dark:bg-dark-950 dark:text-white">
+  <div v-else class="min-h-screen max-w-full overflow-x-hidden bg-gray-50 text-gray-900 dark:bg-dark-950 dark:text-white">
     <header class="border-b border-gray-200 bg-white/90 px-4 py-3 backdrop-blur dark:border-dark-800 dark:bg-dark-900/90 sm:px-6">
       <nav class="mx-auto flex max-w-7xl items-center justify-between gap-4">
         <RouterLink to="/home" class="flex min-w-0 items-center gap-3">
@@ -21,7 +21,7 @@
         </div>
       </nav>
     </header>
-    <main class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+    <main class="mx-auto min-w-0 max-w-7xl px-3 py-4 sm:px-6 sm:py-6 lg:px-8">
       <ModelPlazaContent v-bind="contentProps" @refresh="loadData(false)" />
     </main>
   </div>

@@ -69,6 +69,16 @@ describe('PlazaModelPricingTable', () => {
       expect.arrayContaining(['bg-[#effbf8]', 'text-[#07866f]'])
     )
     expect(wrapper.get('[data-testid="multiplier-badge"]').classes().join(' ')).not.toContain('orange')
+
+    const scroller = wrapper.get('[data-testid="pricing-table-scroll"]')
+    expect(scroller.attributes('role')).toBe('region')
+    expect(scroller.attributes('tabindex')).toBe('0')
+    expect(scroller.classes()).toEqual(
+      expect.arrayContaining(['max-w-full', 'overflow-x-auto', 'overscroll-x-contain'])
+    )
+    expect(wrapper.get('table').classes()).toEqual(
+      expect.arrayContaining(['min-w-[760px]', 'sm:min-w-[900px]'])
+    )
   })
 
   it('renders a highlighted presentation-only model note below the model name', () => {

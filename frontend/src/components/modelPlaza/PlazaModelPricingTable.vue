@@ -1,6 +1,12 @@
 <template>
-  <div class="overflow-x-auto">
-    <table class="w-full min-w-[900px] table-fixed border-collapse text-left" :style="accentStyle">
+  <div
+    data-testid="pricing-table-scroll"
+    class="pricing-table-scroll max-w-full overflow-x-auto overscroll-x-contain"
+    tabindex="0"
+    role="region"
+    :aria-label="t('modelPlaza.title')"
+  >
+    <table class="w-full min-w-[760px] table-fixed border-collapse text-left sm:min-w-[900px]" :style="accentStyle">
       <colgroup v-if="billingMode === BILLING_MODE_TOKEN" data-testid="token-columns">
         <col style="width: 32%" />
         <col style="width: 13%" />
@@ -267,5 +273,15 @@ function imageBasePrice(model: DisplayPriceModel, label: string): number | null 
 
 .site-only-price {
   @apply text-center font-mono text-sm font-semibold text-[#315bd6] dark:text-blue-300;
+}
+
+.pricing-table-scroll {
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+  scrollbar-gutter: stable;
+}
+
+.pricing-table-scroll:focus-visible {
+  @apply outline-none ring-2 ring-inset ring-[#315bd6]/40;
 }
 </style>
