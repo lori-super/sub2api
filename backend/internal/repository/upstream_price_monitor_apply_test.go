@@ -390,3 +390,8 @@ func TestResolveDisplayMultiplierFiltersOpenAIPlatform(t *testing.T) {
 }
 
 func stringPointer(value string) *string { return &value }
+
+func TestDecimalStringRoundsFloatingPointNoiseToDatabasePrecision(t *testing.T) {
+	value := 0.009 * 1.2
+	require.Equal(t, "0.0108", decimalString(&value))
+}

@@ -1159,7 +1159,7 @@ func decimalString(value *float64) any {
 	if value == nil {
 		return nil
 	}
-	return decimal.NewFromFloat(*value).String()
+	return decimal.NewFromFloat(*value).Round(12).String()
 }
 
 func numericAfter(before *string, next any) *string {
