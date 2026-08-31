@@ -137,6 +137,7 @@ type UpstreamPriceMonitorService struct {
 	runMu             sync.Mutex
 	cacheInvalidator  interface{ InvalidatePricingCache() }
 	notifier          UpstreamPriceMonitorNotifier
+	displayPricing    *DisplayPricingService
 }
 
 func NewUpstreamPriceMonitorService(
@@ -162,6 +163,12 @@ func (s *UpstreamPriceMonitorService) SetProbeConcurrencyService(concurrency *Co
 func (s *UpstreamPriceMonitorService) SetPricePageFetcher(fetcher UpstreamPricePageFetcher) {
 	if s != nil {
 		s.pricePage = fetcher
+	}
+}
+
+func (s *UpstreamPriceMonitorService) SetDisplayPricingService(display *DisplayPricingService) {
+	if s != nil {
+		s.displayPricing = display
 	}
 }
 
@@ -527,6 +534,114 @@ func normalizeDomesticModelAllowlist(models []string) ([]string, error) {
 	return out, nil
 }
 
+// syncPerRequestDisplayCatalog makes the upstream public price page the
+// catalogue authority for per-request presentation pricing. It stores only
+// the first downstream tier (upstream first tier * the fixed 1.20 markup); the
+// public catalogue derives the other two tiers as 1.5x and 2x.
+func (s *UpstreamPriceMonitorService) syncPerRequestDisplayCatalog(
+	ctx context.Context,
+	prices map[string]domain.UpstreamPriceVector,
+	cfg *domain.UpstreamPriceMonitorConfig,
+) ([]string, error) {
+	if s.displayPricing == nil {
+		return nil, ErrUpstreamPriceMonitorUnavailable
+	}
+	models, err := s.displayPricing.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	providers, err := s.displayPricing.ListProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	providerByKey := make(map[string]DisplayPricingProvider, len(providers))
+	for i := range providers {
+		providerByKey[normalizeDisplayProvider(providers[i].Provider)] = providers[i]
+	}
+	existingByName := make(map[string]DisplayModelPrice)
+	for i := range models {
+		if models[i].BillingMode == DisplayBillingModePerRequest {
+			existingByName[strings.ToLower(strings.TrimSpace(models[i].ModelName))] = models[i]
+		}
+	}
+	configuredNames := make(map[string]string, len(cfg.PerRequestModels))
+	for _, model := range cfg.PerRequestModels {
+		configuredNames[strings.ToLower(strings.TrimSpace(model))] = strings.TrimSpace(model)
+	}
+
+	desiredNames := make([]string, 0, len(prices))
+	desiredSet := make(map[string]struct{}, len(prices))
+	for rawName, vector := range prices {
+		key := strings.ToLower(strings.TrimSpace(rawName))
+		if key == "" || vector.PerRequestLTE256K == nil || !validNonNegative(*vector.PerRequestLTE256K) {
+			return nil, ErrUpstreamPriceMonitorInvalidConfig
+		}
+		name := strings.TrimSpace(rawName)
+		if existing, ok := existingByName[key]; ok {
+			name = existing.ModelName
+		} else if configured := configuredNames[key]; configured != "" {
+			name = configured
+		}
+		base := *vector.PerRequestLTE256K * DisplayPerRequestMarkup
+		if !validNonNegative(base) {
+			return nil, ErrUpstreamPriceMonitorInvalidConfig
+		}
+		if existing, ok := existingByName[key]; ok {
+			changed := !existing.Enabled || existing.PerRequestLTE256K == nil ||
+				math.Abs(*existing.PerRequestLTE256K-base) > 1e-12 ||
+				existing.PerRequest256K512KOverride != nil || existing.PerRequestGT512KOverride != nil
+			if changed {
+				existing.Enabled = true
+				existing.PerRequestLTE256K = displayFloat64Ptr(base)
+				existing.PerRequest256K512KOverride = nil
+				existing.PerRequestGT512KOverride = nil
+				if _, err := s.displayPricing.UpdateModel(ctx, existing.ID, existing); err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			providerKey := inferDisplayProvider("openai", name)
+			provider, ok := providerByKey[providerKey]
+			if !ok {
+				return nil, fmt.Errorf("%w: no display provider for %s", ErrDisplayProviderNotFound, name)
+			}
+			if _, err := s.displayPricing.UpsertModel(ctx, DisplayModelPrice{
+				Platform: "openai", ModelName: name, Provider: providerKey,
+				BillingMode: DisplayBillingModePerRequest, Currency: provider.Currency,
+				Enabled: true, PerRequestLTE256K: displayFloat64Ptr(base),
+			}); err != nil {
+				return nil, err
+			}
+		}
+		desiredSet[key] = struct{}{}
+		desiredNames = append(desiredNames, name)
+	}
+
+	// Only rows previously managed by this upstream page are disabled on
+	// removal; unrelated administrator-created per-request rows are preserved.
+	for key := range configuredNames {
+		if _, stillPresent := desiredSet[key]; stillPresent {
+			continue
+		}
+		existing, ok := existingByName[key]
+		if !ok || !existing.Enabled {
+			continue
+		}
+		existing.Enabled = false
+		if _, err := s.displayPricing.UpdateModel(ctx, existing.ID, existing); err != nil {
+			return nil, err
+		}
+	}
+	sort.SliceStable(desiredNames, func(i, j int) bool {
+		return strings.ToLower(desiredNames[i]) < strings.ToLower(desiredNames[j])
+	})
+	cfg.PerRequestModels = append([]string(nil), desiredNames...)
+	if err := s.repo.UpdateConfig(ctx, cfg); err != nil {
+		return nil, err
+	}
+	return desiredNames, nil
+}
+
 type upstreamPriceModelDiscoveryResult struct {
 	accountID int64
 	models    []string
@@ -801,14 +916,14 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 		if pageErr != nil {
 			runErrors = append(runErrors, "per-request pricing page: "+pageErr.Error())
 		} else {
-			allowedModels := make(map[string]struct{}, len(cfg.PerRequestModels))
-			for _, model := range cfg.PerRequestModels {
-				allowedModels[strings.ToLower(model)] = struct{}{}
+			managedModels, syncErr := s.syncPerRequestDisplayCatalog(ctx, prices, cfg)
+			if syncErr != nil {
+				runErrors = append(runErrors, "per-request display catalogue: "+syncErr.Error())
+				prices = nil
+			} else {
+				cfg.PerRequestModels = managedModels
 			}
 			for model, price := range prices {
-				if _, allowed := allowedModels[strings.ToLower(strings.TrimSpace(model))]; !allowed {
-					continue
-				}
 				evidence := &domain.UpstreamPriceEvidence{
 					RunID: run.ID, AccountID: 0, ModelName: model, BillingMode: DisplayBillingModePerRequest,
 					Status: domain.UpstreamPriceEvidenceStatusTrusted, Source: domain.UpstreamPriceEvidenceSourcePricePage,

@@ -77,7 +77,7 @@ describe('display pricing APIs', () => {
     expect(del).toHaveBeenCalledWith('/admin/display-pricing/providers/custom-ai')
   })
 
-  it('uses the explicit per-request override fields in model upserts', async () => {
+  it('always removes legacy per-request overrides and submits the fixed three-tier curve', async () => {
     const payload = {
       platform: 'openai',
       model_name: 'deepseek-test',
@@ -101,6 +101,18 @@ describe('display pricing APIs', () => {
 
     await displayPricingAPI.createModel(payload)
 
-    expect(post).toHaveBeenCalledWith('/admin/display-pricing/models', payload)
+    expect(post).toHaveBeenCalledWith('/admin/display-pricing/models', {
+      ...payload,
+      per_request_256k_512k_override: null,
+      per_request_gt_512k_override: null
+    })
+
+    put.mockResolvedValue({ data: { id: 1, ...payload } })
+    await displayPricingAPI.updateModel(1, payload)
+    expect(put).toHaveBeenCalledWith('/admin/display-pricing/models/1', {
+      ...payload,
+      per_request_256k_512k_override: null,
+      per_request_gt_512k_override: null
+    })
   })
 })

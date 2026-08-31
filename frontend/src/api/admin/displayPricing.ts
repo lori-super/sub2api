@@ -168,13 +168,35 @@ export async function listModels(): Promise<DisplayPricingModel[]> {
   return data.items
 }
 
+/**
+ * The customer-facing per-request catalogue always uses a fixed three-tier
+ * curve: base / base x 1.5 / base x 2. Older records may still contain manual
+ * override values, so strip them at the API boundary as well as in the editor.
+ */
+export function prepareDisplayPricingModelPayload(
+  payload: DisplayPricingModelInput
+): DisplayPricingModelInput {
+  if (payload.billing_mode !== 'per_request') return payload
+  return {
+    ...payload,
+    per_request_256k_512k_override: null,
+    per_request_gt_512k_override: null
+  }
+}
+
 export async function createModel(payload: DisplayPricingModelInput): Promise<DisplayPricingModel> {
-  const { data } = await apiClient.post<DisplayPricingModel>('/admin/display-pricing/models', payload)
+  const { data } = await apiClient.post<DisplayPricingModel>(
+    '/admin/display-pricing/models',
+    prepareDisplayPricingModelPayload(payload)
+  )
   return data
 }
 
 export async function updateModel(id: number, payload: DisplayPricingModelInput): Promise<DisplayPricingModel> {
-  const { data } = await apiClient.put<DisplayPricingModel>(`/admin/display-pricing/models/${id}`, payload)
+  const { data } = await apiClient.put<DisplayPricingModel>(
+    `/admin/display-pricing/models/${id}`,
+    prepareDisplayPricingModelPayload(payload)
+  )
   return data
 }
 

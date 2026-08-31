@@ -16,9 +16,10 @@ export default {
     sortOrder: '排序',
     global: {
       title: '全局展示倍率',
-      hint: '仅用于按量模型的展示价计算',
+      hint: '全局基准固定为 1×，请在厂商处设置售价倍率',
       multiplier: '默认倍率',
-      priority: '模型设置固定倍率时直接使用；留空时使用“全局倍率 × 厂商系数”。按次和生图价格不使用该倍率。'
+      fixed: '固定',
+      priority: '普通模型继承厂商倍率；只有特殊模型才设置固定倍率。按次价格使用 1× / 1.5× / 2× 三档。'
     },
     providers: {
       title: '厂商展示设置',
@@ -65,21 +66,21 @@ export default {
       inherited: '继承',
       tokenSummary: '官方价 × {multiplier}',
       tokenFixedSummary: '官方价 × 固定倍率 {multiplier}',
-      tokenInheritedSummary: '官方价 × 全局倍率 × 厂商系数',
-      perRequestSummary: '基础价 {price}，后两档默认 ×1.5 / ×2',
+      tokenInheritedSummary: '官方价 × 厂商倍率',
+      perRequestSummary: '首档 {price}，后两档固定 ×1.5 / ×2',
       imageSummary: '{count} 个生图规格'
     },
     editor: {
       createTitle: '添加展示定价',
       editTitle: '编辑展示定价',
       officialPrices: '官方基础价（每 100 万 Token）',
-      tokenFormula: '用户页展示价 = 官方基础价 × 生效倍率。固定倍率有值时不再受全局和厂商变化影响。',
+      tokenFormula: '用户页展示价 = 官方基础价 × 生效倍率。普通模型使用厂商倍率，特殊模型使用固定倍率。',
       modelMultiplier: '固定展示倍率',
-      inheritMultiplier: '留空跟随全局 × 厂商系数',
+      inheritMultiplier: '留空跟随厂商倍率',
       perRequestPrices: '按次三档展示价',
-      perRequestFormula: '只需填写 ≤256K 基础价；留空时后两档自动按 ×1.5 / ×2 生成。按次价格不展示倍率。',
-      tier2Override: '256K–512K（可选覆盖）',
-      tier3Override: '> 512K（可选覆盖）',
+      perRequestFormula: '只需填写 ≤256K 的 1× 价格；后两档固定自动按 1.5× / 2× 计算，不能单独覆盖。',
+      tier2Derived: '256K–512K ·1.5×（自动）',
+      tier3Derived: '> 512K ·2×（自动）',
       autoDerived: '自动计算',
       imagePrices: '生图规格价格',
       imageHint: '每个规格单独填写基础价，用户页同时展示基础价与按生效倍率计算的本站售价。',

@@ -291,7 +291,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	upstreamPriceActiveProber := service.NewX5M5XUpstreamPriceActiveProber(accountTestService)
 	upstreamPricePageFetcher := service.NewX5M5XPricePageFetcher()
 	upstreamPriceMonitorEmailNotifier := service.NewUpstreamPriceMonitorEmailNotifier(settingRepository, notificationEmailService)
-	upstreamPriceMonitorService := service.ProvideUpstreamPriceMonitorService(upstreamPriceMonitorRepository, accountRepository, upstreamPriceRemoteFetcher, upstreamPriceActiveProber, concurrencyService, upstreamPricePageFetcher, channelService, upstreamPriceMonitorEmailNotifier)
+	upstreamPriceMonitorService := service.ProvideUpstreamPriceMonitorService(upstreamPriceMonitorRepository, accountRepository, upstreamPriceRemoteFetcher, upstreamPriceActiveProber, concurrencyService, upstreamPricePageFetcher, displayPricingService, channelService, upstreamPriceMonitorEmailNotifier)
 	upstreamPriceMonitorHandler := admin.NewUpstreamPriceMonitorHandler(upstreamPriceMonitorService)
 	upstreamBillingProbeService := service.ProvideUpstreamBillingProbeService(accountRepository, accountTestService, settingService, leaderLockCache, db)
 	ollamaCloudUsageService := service.ProvideOllamaCloudUsageService(accountRepository, httpUpstream, settingService, secretEncryptor, configConfig, leaderLockCache, db)

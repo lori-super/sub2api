@@ -824,6 +824,7 @@ func ProvideUpstreamPriceMonitorService(
 	activeProber UpstreamPriceActiveProber,
 	concurrency *ConcurrencyService,
 	pricePage UpstreamPricePageFetcher,
+	displayPricing *DisplayPricingService,
 	channels *ChannelService,
 	notifier UpstreamPriceMonitorNotifier,
 ) *UpstreamPriceMonitorService {
@@ -831,6 +832,7 @@ func ProvideUpstreamPriceMonitorService(
 	svc.SetActiveProber(activeProber)
 	svc.SetProbeConcurrencyService(concurrency)
 	svc.SetPricePageFetcher(pricePage)
+	svc.SetDisplayPricingService(displayPricing)
 	svc.SetPricingCacheInvalidator(channels)
 	svc.SetNotifier(notifier)
 	return svc

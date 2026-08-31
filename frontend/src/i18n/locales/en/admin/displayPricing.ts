@@ -16,9 +16,10 @@ export default {
     sortOrder: 'Order',
     global: {
       title: 'Global display multiplier',
-      hint: 'Used only for token-metered catalogue prices',
+      hint: 'The global baseline is fixed at 1×; set selling multipliers per provider',
       multiplier: 'Default multiplier',
-      priority: 'A fixed model multiplier is used as-is. When blank, the effective multiplier is global × provider factor. Per-request and image prices never use it.'
+      fixed: 'Fixed',
+      priority: 'Normal models inherit their provider multiplier. Set a fixed multiplier only for exceptional models. Per-request pricing always uses the 1× / 1.5× / 2× curve.'
     },
     providers: {
       title: 'Provider display settings',
@@ -65,21 +66,21 @@ export default {
       inherited: 'inherited',
       tokenSummary: 'Official price × {multiplier}',
       tokenFixedSummary: 'Official price × fixed {multiplier}',
-      tokenInheritedSummary: 'Official price × global × provider factor',
-      perRequestSummary: 'Base {price}; next tiers default to ×1.5 / ×2',
+      tokenInheritedSummary: 'Official price × provider multiplier',
+      perRequestSummary: 'First tier {price}; next tiers are fixed at ×1.5 / ×2',
       imageSummary: '{count} image tiers'
     },
     editor: {
       createTitle: 'Add Display Pricing',
       editTitle: 'Edit Display Pricing',
       officialPrices: 'Official base prices (per 1M tokens)',
-      tokenFormula: 'Customer display price = official base price × effective multiplier. A fixed model multiplier is not affected by global or provider changes.',
+      tokenFormula: 'Customer display price = official base price × effective multiplier. Normal models use the provider multiplier; exceptional models use a fixed multiplier.',
       modelMultiplier: 'Fixed display multiplier',
-      inheritMultiplier: 'Leave blank to follow global × provider factor',
+      inheritMultiplier: 'Leave blank to follow the provider multiplier',
       perRequestPrices: 'Three-tier per-request prices',
-      perRequestFormula: 'Enter the ≤256K base price. Blank higher tiers are derived at ×1.5 / ×2. No multiplier is shown for per-request pricing.',
-      tier2Override: '256K–512K (optional override)',
-      tier3Override: '> 512K (optional override)',
+      perRequestFormula: 'Enter only the ≤256K 1× price. The next tiers are always derived at 1.5× / 2× and cannot be overridden separately.',
+      tier2Derived: '256K–512K ·1.5× (automatic)',
+      tier3Derived: '> 512K ·2× (automatic)',
       autoDerived: 'Auto-derived',
       imagePrices: 'Image specification prices',
       imageHint: 'Enter the base price for each specification. The customer page shows both the base price and the site price calculated with the effective multiplier.',
