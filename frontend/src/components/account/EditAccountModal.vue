@@ -3408,10 +3408,14 @@ const planTypeOptions = computed(() =>
 )
 const openAIResponsesModeOptions = computed(() => [
   { value: 'auto', label: t('admin.accounts.openai.responsesModeAuto') },
+  { value: 'adaptive', label: t('admin.accounts.openai.responsesModeAdaptive') },
   { value: 'force_responses', label: t('admin.accounts.openai.responsesModeForceResponses') },
   { value: 'force_chat_completions', label: t('admin.accounts.openai.responsesModeForceChatCompletions') }
 ])
 const openAITextEndpointCapabilityLabel = computed(() => {
+  if (openAIResponsesMode.value === 'adaptive') {
+    return t('admin.accounts.openai.capabilityAdaptive')
+  }
   if (openAIResponsesMode.value === 'force_responses') {
     return t('admin.accounts.openai.capabilityResponses')
   }
@@ -3491,7 +3495,7 @@ const applyOpenAIEndpointCapabilities = (credentials: Record<string, unknown>) =
   credentials.openai_capabilities = capabilities
 }
 const normalizeOpenAIResponsesMode = (mode: unknown): OpenAIResponsesMode => {
-  if (mode === 'force_responses' || mode === 'force_chat_completions') {
+  if (mode === 'adaptive' || mode === 'force_responses' || mode === 'force_chat_completions') {
     return mode
   }
   return 'auto'
@@ -3500,6 +3504,9 @@ const isOpenAIModelRestrictionDisabled = computed(() =>
   props.account?.platform === 'openai' && openaiPassthroughEnabled.value
 )
 const openAIResponsesStatusKey = computed(() => {
+  if (openAIResponsesMode.value === 'adaptive') {
+    return 'admin.accounts.openai.responsesStatusAdaptive'
+  }
   if (openAIResponsesMode.value === 'force_responses') {
     return 'admin.accounts.openai.responsesStatusForcedResponses'
   }

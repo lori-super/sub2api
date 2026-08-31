@@ -101,6 +101,13 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	// accounts never forward the body unchanged to a Chat Completions endpoint.
 	isResponsesShape := !gjson.GetBytes(body, "messages").Exists() && gjson.GetBytes(body, "input").Exists()
 
+	// Generic OpenAI-compatible adaptive accounts preserve the client's wire
+	// protocol. A prior 404/405 fallback mark skips this branch exactly once so
+	// the existing Chat→Responses conversion path can retry the same account.
+	if isGenericOpenAIAdaptiveAccount(account) && !isResponsesShape && !adaptiveChatFallbackTried(c) {
+		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+	}
+
 	// 自适应账号的标准 Chat Completions 入站使用供应商原生 CC 端点。
 	// Responses 形状下，DeepSeek 继续走下方原生 Responses 链；Kimi/GLM
 	// 没有 Responses 端点，先转换成 Chat Completions 再直转。

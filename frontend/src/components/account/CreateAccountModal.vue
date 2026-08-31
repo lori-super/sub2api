@@ -4307,10 +4307,14 @@ const openAICompactModeOptions = computed(() => [
 ])
 const openAIResponsesModeOptions = computed(() => [
   { value: 'auto', label: t('admin.accounts.openai.responsesModeAuto') },
+  { value: 'adaptive', label: t('admin.accounts.openai.responsesModeAdaptive') },
   { value: 'force_responses', label: t('admin.accounts.openai.responsesModeForceResponses') },
   { value: 'force_chat_completions', label: t('admin.accounts.openai.responsesModeForceChatCompletions') }
 ])
 const openAITextEndpointCapabilityLabel = computed(() => {
+  if (openAIResponsesMode.value === 'adaptive') {
+    return t('admin.accounts.openai.capabilityAdaptive')
+  }
   if (openAIResponsesMode.value === 'force_responses') {
     return t('admin.accounts.openai.capabilityResponses')
   }

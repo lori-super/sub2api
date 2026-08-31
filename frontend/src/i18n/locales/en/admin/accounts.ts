@@ -597,8 +597,9 @@ export default {
           'Automatic passthrough is currently enabled: it only affects HTTP passthrough and does not disable WS mode.',
         responsesMode: 'Responses API support',
         responsesModeDesc:
-          'Only applies to the OpenAI API Key text forwarding path. Auto follows probe results; force modes override probing.',
+          'Only applies to OpenAI API Key text forwarding. Protocol adaptive keeps Chat→Chat and Responses→Responses, converting only when the target endpoint is explicitly unavailable.',
         responsesModeAuto: 'Auto',
+        responsesModeAdaptive: 'Protocol adaptive (passthrough)',
         responsesModeForceResponses: 'Force Responses',
         responsesModeForceChatCompletions: 'Force Chat Completions',
         responsesModeTextDisabledHint:
@@ -607,6 +608,7 @@ export default {
         endpointCapabilitiesDesc:
           'Used by account routing. The text endpoint follows the Responses API support setting above and is shown as Responses, Chat Completions, or auto mode; Embeddings independently controls /v1/embeddings.',
         capabilityResponses: 'Responses',
+        capabilityAdaptive: 'Responses / Chat Completions (protocol adaptive)',
         capabilityTextAuto: 'Responses / Chat Completions (Auto)',
         capabilityResponsesAuto: 'Responses (auto probe)',
         capabilityChatCompletions: 'Chat Completions',
@@ -615,6 +617,7 @@ export default {
         responsesStatusAutoSupported: 'Auto probe: Responses',
         responsesStatusAutoUnsupported: 'Auto probe: Chat Completions',
         responsesStatusAutoUnknown: 'Auto probe: unknown',
+        responsesStatusAdaptive: 'Protocol adaptive: Chat→Chat, Responses→Responses',
         responsesStatusForcedResponses: 'Forced Responses',
         responsesStatusForcedChatCompletions: 'Forced Chat Completions',
         planType: 'Plan tier (manual override)',

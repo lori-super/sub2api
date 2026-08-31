@@ -178,7 +178,7 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	stream bool,
 	bearerToken string,
 	userAgent string,
-	grokCacheIdentity string,
+	cacheIdentity string,
 ) (*http.Response, error) {
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(body))
@@ -216,7 +216,9 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 		if account.IsGrokOAuth() {
 			applyGrokCLIHeaders(upstreamReq.Header)
 		}
-		applyGrokCacheHeaders(upstreamReq.Header, grokCacheIdentity)
+		applyGrokCacheHeaders(upstreamReq.Header, cacheIdentity)
+	} else if isX5M5XOpenAIAPIKeyAccount(account) {
+		applyX5M5XCacheIdentity(upstreamReq.Header, cacheIdentity)
 	}
 	// 账号级请求头覆写：放在所有内置默认头（含 Grok CLI 身份头）之后应用，
 	// 使配置值获得除共享传输层强制头之外的最高优先级。

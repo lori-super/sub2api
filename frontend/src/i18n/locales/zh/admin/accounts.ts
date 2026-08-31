@@ -679,8 +679,9 @@ export default {
         responsesWebsocketsV2PassthroughHint: '当前已开启自动透传：仅影响 HTTP 透传链路，不影响 WS mode。',
         responsesMode: 'Responses API 支持',
         responsesModeDesc:
-          '仅对 OpenAI API Key 的文本转发链路生效。自动跟随探测结果，强制模式会覆盖自动探测。',
+          '仅对 OpenAI API Key 的文本转发链路生效。协议自适应会让 Chat→Chat、Responses→Responses，仅在目标端点明确不存在时回退转换。',
         responsesModeAuto: '自动',
+        responsesModeAdaptive: '协议自适应（原样转发）',
         responsesModeForceResponses: '强制 Responses',
         responsesModeForceChatCompletions: '强制 Chat Completions',
         responsesModeTextDisabledHint: '未启用 Responses / Chat Completions 端点时，此设置不适用。',
@@ -688,6 +689,7 @@ export default {
         endpointCapabilitiesDesc:
           '用于调度筛选。文本端点会跟随上方 Responses API 支持显示为 Responses、Chat Completions 或自动模式；Embeddings 独立控制 /v1/embeddings。',
         capabilityResponses: 'Responses',
+        capabilityAdaptive: 'Responses / Chat Completions（协议自适应）',
         capabilityTextAuto: 'Responses / Chat Completions（自动）',
         capabilityResponsesAuto: 'Responses（自动探测）',
         capabilityChatCompletions: 'Chat Completions',
@@ -696,6 +698,7 @@ export default {
         responsesStatusAutoSupported: '自动探测：Responses',
         responsesStatusAutoUnsupported: '自动探测：Chat Completions',
         responsesStatusAutoUnknown: '自动探测：未探测',
+        responsesStatusAdaptive: '协议自适应：Chat→Chat，Responses→Responses',
         responsesStatusForcedResponses: '已强制 Responses',
         responsesStatusForcedChatCompletions: '已强制 Chat Completions',
         planType: '订阅档位（手动覆盖）',

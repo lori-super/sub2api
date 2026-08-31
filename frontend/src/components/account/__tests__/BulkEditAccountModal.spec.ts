@@ -534,6 +534,22 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
+  it('批量提交协议自适应模式', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-openai-responses-mode-enabled').setValue(true)
+    await wrapper.get('[data-testid="bulk-edit-openai-responses-mode-select"]').setValue('adaptive')
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: { openai_responses_mode: 'adaptive' }
+    })
+  })
+
   it('仅启用 Embeddings 时恢复 Responses 自动模式并精确提交联动字段', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],

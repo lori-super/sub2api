@@ -73,11 +73,13 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
 	SetOpsUpstreamModel(c, upstreamModel)
-	grokCacheIdentity := ""
+	upstreamCacheIdentity := ""
 	if account.Platform == PlatformGrok {
 		// Resolve before image bridging or other body rewrites so the fallback is
 		// anchored to the client's stable conversation prefix.
-		grokCacheIdentity = resolveGrokCacheIdentity(c, body, "", upstreamModel)
+		upstreamCacheIdentity = resolveGrokCacheIdentity(c, body, "", upstreamModel)
+	} else if isX5M5XOpenAIAPIKeyAccount(account) {
+		upstreamCacheIdentity = x5M5XCacheIdentity(c, account, body)
 	}
 	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
 	// 国产模型默认 effort 补充：需要 mappedModel 判定，推迟到 billingModel 算出之后。
@@ -177,7 +179,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if customUA == "" && account.IsGrokOAuth() {
 		customUA = defaultGrokUpstreamUserAgent()
 	}
-	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, clientStream, token, customUA, grokCacheIdentity)
+	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, clientStream, token, customUA, upstreamCacheIdentity)
 	if err != nil {
 		return nil, err
 	}
@@ -186,6 +188,16 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	// 7. Handle error response with failover
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		if isGenericOpenAIAdaptiveAccount(account) &&
+			!adaptiveChatFallbackTried(c) &&
+			isOpenAIProtocolEndpointUnavailable(resp.StatusCode, respBody) {
+			markAdaptiveChatFallbackTried(c)
+			logger.L().Info("openai adaptive: chat endpoint unavailable, retrying via responses",
+				zap.Int64("account_id", account.ID),
+				zap.Int("upstream_status", resp.StatusCode),
+			)
+			return s.ForwardAsChatCompletions(ctx, c, account, body, explicitOpenAIRequestSessionID(c, body), defaultMappedModel)
+		}
 		if account.Platform == PlatformGrok {
 			kind := "http_error"
 			if s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody) {
