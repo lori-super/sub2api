@@ -953,20 +953,19 @@ func upstreamPriceVectorEmpty(value domain.UpstreamPriceVector) bool {
 		value.PerRequestLTE256K == nil && value.PerRequest256K512K == nil && value.PerRequestGT512K == nil
 }
 
-func validateUpstreamPriceApplyEvidence(items []upstreamPriceApplyEvidence, automatic bool) error {
+func validateUpstreamPriceApplyEvidence(items []upstreamPriceApplyEvidence, _ bool) error {
 	for _, item := range items {
 		fields := []struct {
 			name      string
-			current   *float64
 			suggested *float64
 		}{
-			{"input", item.Current.InputPerMillion, item.Suggested.InputPerMillion},
-			{"output", item.Current.OutputPerMillion, item.Suggested.OutputPerMillion},
-			{"cache_write", item.Current.CacheWritePerMillion, item.Suggested.CacheWritePerMillion},
-			{"cache_read", item.Current.CacheReadPerMillion, item.Suggested.CacheReadPerMillion},
-			{"per_request_lte_256k", item.Current.PerRequestLTE256K, item.Suggested.PerRequestLTE256K},
-			{"per_request_256k_512k", item.Current.PerRequest256K512K, item.Suggested.PerRequest256K512K},
-			{"per_request_gt_512k", item.Current.PerRequestGT512K, item.Suggested.PerRequestGT512K},
+			{"input", item.Suggested.InputPerMillion},
+			{"output", item.Suggested.OutputPerMillion},
+			{"cache_write", item.Suggested.CacheWritePerMillion},
+			{"cache_read", item.Suggested.CacheReadPerMillion},
+			{"per_request_lte_256k", item.Suggested.PerRequestLTE256K},
+			{"per_request_256k_512k", item.Suggested.PerRequest256K512K},
+			{"per_request_gt_512k", item.Suggested.PerRequestGT512K},
 		}
 		for _, field := range fields {
 			if field.suggested == nil {
@@ -975,18 +974,6 @@ func validateUpstreamPriceApplyEvidence(items []upstreamPriceApplyEvidence, auto
 			if math.IsNaN(*field.suggested) || math.IsInf(*field.suggested, 0) || *field.suggested <= 0 {
 				return fmt.Errorf("%w: model %s has non-positive %s price",
 					service.ErrUpstreamPriceRunNotApplicable, item.Model, field.name)
-			}
-			if !automatic {
-				continue
-			}
-			if field.current == nil || math.IsNaN(*field.current) || math.IsInf(*field.current, 0) || *field.current <= 0 {
-				return fmt.Errorf("%w: model %s has no positive %s baseline",
-					service.ErrUpstreamPriceSnapshotMismatch, item.Model, field.name)
-			}
-			change := math.Abs(*field.suggested-*field.current) / math.Abs(*field.current)
-			if change > 0.20+1e-12 {
-				return fmt.Errorf("%w: automatic %s price change for model %s exceeds 20%%",
-					service.ErrUpstreamPriceRunNotApplicable, field.name, item.Model)
 			}
 		}
 	}

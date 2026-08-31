@@ -44,11 +44,18 @@ func TestUpstreamPriceMonitorNotifierTemplateEscapesAndRedacts(t *testing.T) {
 	payload.Error = "upstream failed token=super-secret sk-1234567890abcdef hash " + strings.Repeat("a", 64) + " https://example.com/path?key=secret"
 
 	for _, locale := range []string{"en", "zh-CN"} {
-		preview, err := notificationService.PreviewTemplate(ctx, NotificationEmailPreviewInput{
-			Event:     NotificationEmailEventUpstreamPriceMonitor,
-			Locale:    locale,
+		tmpl, err := notificationService.GetTemplate(ctx, NotificationEmailEventUpstreamPriceMonitor, locale)
+		require.NoError(t, err)
+		variables := notificationService.runtimeVariables(ctx, NotificationEmailEventUpstreamPriceMonitor, locale, NotificationEmailSendInput{
 			Variables: upstreamPriceMonitorNotificationVariables(payload, locale),
 		})
+		preview, err := renderNotificationEmail(
+			NotificationEmailEventUpstreamPriceMonitor,
+			tmpl.Subject,
+			tmpl.HTML,
+			variables,
+			upstreamPriceMonitorNotificationRawHTMLVariables(payload, locale),
+		)
 		require.NoError(t, err)
 		require.NotContains(t, preview.HTML, `<script>alert("model")</script>`)
 		require.Contains(t, preview.HTML, `&lt;script&gt;alert`)
@@ -57,6 +64,87 @@ func TestUpstreamPriceMonitorNotifierTemplateEscapesAndRedacts(t *testing.T) {
 		require.NotContains(t, preview.HTML, strings.Repeat("a", 64))
 		require.NotContains(t, preview.HTML, "example.com/path")
 		require.Contains(t, preview.HTML, "[redacted]")
+	}
+}
+
+func TestUpstreamPriceMonitorNotifierRendersReadablePriceEmail(t *testing.T) {
+	ctx := context.Background()
+	repo := newNotificationEmailMemorySettingRepo()
+	require.NoError(t, repo.Set(ctx, SettingKeySiteName, "LLMRoute"))
+	notificationService := NewNotificationEmailService(repo, nil)
+	payload := upstreamPriceMonitorTestNotificationPayload(86, UpstreamPriceMonitorNotificationApplied)
+	oldCacheWrite, measuredCacheWrite, suggestedCacheWrite := 0.3, 0.4, 0.48
+	oldRequest, measuredRequest, suggestedRequest := 0.002, 0.0021, 0.00252
+	payload.Models[0].OldPrices.CacheWritePerMillion = &oldCacheWrite
+	payload.Models[0].MeasuredPrices.CacheWritePerMillion = &measuredCacheWrite
+	payload.Models[0].SuggestedPrices.CacheWritePerMillion = &suggestedCacheWrite
+	payload.Models[0].OldPrices.PerRequestLTE256K = &oldRequest
+	payload.Models[0].MeasuredPrices.PerRequestLTE256K = &measuredRequest
+	payload.Models[0].SuggestedPrices.PerRequestLTE256K = &suggestedRequest
+
+	for _, locale := range []string{"en", "zh-CN"} {
+		variables := notificationService.runtimeVariables(ctx, NotificationEmailEventUpstreamPriceMonitor, locale, NotificationEmailSendInput{
+			Variables: upstreamPriceMonitorNotificationVariables(payload, locale),
+		})
+		tmpl, err := notificationService.GetTemplate(ctx, NotificationEmailEventUpstreamPriceMonitor, locale)
+		require.NoError(t, err)
+		preview, err := renderNotificationEmail(
+			NotificationEmailEventUpstreamPriceMonitor,
+			tmpl.Subject,
+			tmpl.HTML,
+			variables,
+			upstreamPriceMonitorNotificationRawHTMLVariables(payload, locale),
+		)
+		require.NoError(t, err)
+		require.Equal(t, "[LLMRoute] "+payload.Action.subjectLabel(locale == "zh-CN")+" · MiniMax-M3", preview.Subject)
+		require.NotContains(t, preview.HTML, "<pre")
+		require.Contains(t, preview.HTML, `<table class="pricing">`)
+		require.Contains(t, preview.HTML, `$0.21 / 1M`)
+		require.Contains(t, preview.HTML, `$0.252 / 1M`)
+		require.Contains(t, preview.HTML, `20.00%`)
+		require.Contains(t, preview.HTML, `×0.1`)
+		require.Contains(t, preview.HTML, `×0.12`)
+		require.NotContains(t, preview.HTML, `class="error-card"`)
+		if locale == "zh-CN" {
+			require.Contains(t, preview.HTML, "上游实测成本")
+			require.Contains(t, preview.HTML, "20%上浮后新售价")
+		} else {
+			require.Contains(t, preview.HTML, "Measured upstream cost")
+			require.Contains(t, preview.HTML, "New price (+20%)")
+		}
+	}
+}
+
+func TestUpstreamPriceMonitorNotifierRawHTMLValuesAreEscapedAndErrorIsConditional(t *testing.T) {
+	payload := upstreamPriceMonitorTestNotificationPayload(87, UpstreamPriceMonitorNotificationApplyFailed)
+	payload.Models[0].Model = `<img src=x onerror="alert(1)">`
+	payload.Error = `failed <svg onload="alert(2)"> token=super-secret`
+
+	raw := upstreamPriceMonitorNotificationRawHTMLVariables(payload, "zh")
+	require.Contains(t, raw["monitor_price_rows"], `&lt;img src=x onerror=&#34;alert(1)&#34;&gt;`)
+	require.NotContains(t, raw["monitor_price_rows"], `<img src=x`)
+	require.Contains(t, raw["monitor_multiplier_cards"], `&lt;img src=x onerror=&#34;alert(1)&#34;&gt;`)
+	require.NotContains(t, raw["monitor_multiplier_cards"], `<img src=x`)
+	require.Contains(t, raw["monitor_error_card"], `&lt;svg onload=&#34;alert(2)&#34;&gt;`)
+	require.NotContains(t, raw["monitor_error_card"], `<svg onload`)
+	require.NotContains(t, raw["monitor_error_card"], "super-secret")
+
+	payload.Error = ""
+	raw = upstreamPriceMonitorNotificationRawHTMLVariables(payload, "zh")
+	require.Empty(t, raw["monitor_error_card"])
+}
+
+func TestUpstreamPriceMonitorOfficialPreviewUsesSafeSampleRows(t *testing.T) {
+	svc := NewNotificationEmailService(newNotificationEmailMemorySettingRepo(), nil)
+	for _, locale := range []string{"en", "zh"} {
+		preview, err := svc.PreviewTemplate(context.Background(), NotificationEmailPreviewInput{
+			Event:  NotificationEmailEventUpstreamPriceMonitor,
+			Locale: locale,
+		})
+		require.NoError(t, err)
+		require.Contains(t, preview.HTML, `<tr class="price-row">`)
+		require.NotContains(t, preview.HTML, `&lt;tr class=&#34;price-row&#34;&gt;`)
+		require.NotContains(t, preview.HTML, "{{")
 	}
 }
 
@@ -81,7 +169,7 @@ func TestUpstreamPriceMonitorNotifierSupportsAllActionsAndLocales(t *testing.T) 
 				Variables: upstreamPriceMonitorNotificationVariables(payload, locale),
 			})
 			require.NoError(t, err)
-			require.Contains(t, preview.Subject, action.label(locale == "zh"))
+			require.Contains(t, preview.Subject, action.subjectLabel(locale == "zh"))
 			require.NotContains(t, preview.HTML, "{{")
 		}
 	}
