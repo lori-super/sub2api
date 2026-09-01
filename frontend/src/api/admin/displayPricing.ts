@@ -15,6 +15,10 @@ export interface DisplayPricingProvider {
   image_note: string
   currency: DisplayPriceCurrency
   multiplier: number | null
+  input_multiplier_override: number | null
+  output_multiplier_override: number | null
+  cache_write_multiplier_override: number | null
+  cache_read_multiplier_override: number | null
   sort_order: number
   logo_key: string
   logo_url: string
@@ -46,6 +50,14 @@ export interface DisplayPricingModelInput {
   official_price_source_url?: string
   official_price_synced_at?: string | null
   model_multiplier: number | null
+  input_multiplier_override: number | null
+  output_multiplier_override: number | null
+  cache_write_multiplier_override: number | null
+  cache_read_multiplier_override: number | null
+  display_input_per_million_override: number | null
+  display_output_per_million_override: number | null
+  display_cache_write_per_million_override: number | null
+  display_cache_read_per_million_override: number | null
   per_request_lte_256k: number | null
   per_request_256k_512k_override: number | null
   per_request_gt_512k_override: number | null

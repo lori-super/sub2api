@@ -37,6 +37,7 @@ export default {
       imageNotePlaceholder: '可选，仅展示在该厂商的生图报价下方',
       multiplier: '厂商倍率系数',
       multiplierValue: '系数 ×{value}',
+      dimensionOverrides: '含分项倍率',
       logoKey: '内置 Logo',
       logoAuto: '自动匹配厂商标识',
       logoUrl: '自定义 Logo 地址',
@@ -67,6 +68,8 @@ export default {
       tokenSummary: '官方价 × {multiplier}',
       tokenFixedSummary: '官方价 × 固定倍率 {multiplier}',
       tokenInheritedSummary: '官方价 × 厂商倍率',
+      tokenDimensionSummary: '分项倍率：{overrides}',
+      tokenPriceOverrideSummary: '最终售价覆盖：{overrides}',
       perRequestSummary: '首档 {price}，后两档固定 ×1.5 / ×2',
       imageSummary: '{count} 个生图规格'
     },
@@ -74,7 +77,7 @@ export default {
       createTitle: '添加展示定价',
       editTitle: '编辑展示定价',
       officialPrices: '官方基础价（每 100 万 Token）',
-      tokenFormula: '用户页展示价 = 官方基础价 × 生效倍率。普通模型使用厂商倍率，特殊模型使用固定倍率。',
+      tokenFormula: '本站售价优先使用最终售价覆盖；未覆盖时按官方基础价 × 该分项的生效倍率计算。',
       modelMultiplier: '固定展示倍率',
       inheritMultiplier: '留空跟随厂商倍率',
       perRequestPrices: '按次三档展示价',
@@ -87,6 +90,17 @@ export default {
       addTier: '添加规格',
       specLabel: '规格名称',
       pricePerImage: '每张基础价'
+    },
+    dimensionOverrides: {
+      title: '高级：分项倍率覆盖',
+      providerHint: '仅在输入、输出或缓存的售价倍率不同时填写。留空继承上方的厂商统一倍率。',
+      modelHint: '模型分项倍率优先级最高，适合缓存读等特殊价格。留空则继承模型统一倍率或厂商规则。',
+      inheritProviderUnified: '留空继承厂商统一倍率',
+      inheritModelRule: '留空继承上级规则'
+    },
+    priceOverrides: {
+      title: '高级：最终售价覆盖（每 100 万 Token）',
+      hint: '仅在“官方基础价 × 倍率”无法表达上游价格时填写。该值优先于任何倍率，留空使用正常倍率计算。'
     },
     discovered: {
       title: '从已上线模型选择',

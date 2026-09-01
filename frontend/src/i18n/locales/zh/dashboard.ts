@@ -685,6 +685,7 @@ export default {
       basePrice: '基础价格',
       sitePrice: '本站售价',
       displayMultiplier: '展示倍率',
+      dimensionPricing: '分项定价',
       unavailable: '暂无展示价',
       requestUnit: '次',
       cacheWriteShort: '写',

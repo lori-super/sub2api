@@ -30,6 +30,12 @@ function model(overrides: Partial<DisplayPriceModel>): DisplayPriceModel {
     },
     model_multiplier: null,
     effective_multiplier: 1.25,
+    effective_multipliers: {
+      input_per_million: 1.25,
+      output_per_million: 1.25,
+      cache_write_per_million: 1.25,
+      cache_read_per_million: 1.25
+    },
     display_prices: {
       input_per_million: 1.25,
       output_per_million: 5,
@@ -93,6 +99,90 @@ describe('PlazaModelPricingTable', () => {
     })
 
     expect(wrapper.get('[data-testid="model-note"]').text()).toBe('资源紧张，价格将适时下调。')
+  })
+
+  it('shows each token dimension multiplier and replaces a misleading unified badge for mixed pricing', () => {
+    const wrapper = mount(PlazaModelPricingTable, {
+      props: {
+        models: [model({
+          effective_multiplier: null,
+          effective_multipliers: {
+            input_per_million: 0.12,
+            output_per_million: 0.12,
+            cache_write_per_million: null,
+            cache_read_per_million: 0.36
+          },
+          display_prices: {
+            input_per_million: 0.192,
+            output_per_million: 0.564,
+            cache_write_per_million: null,
+            cache_read_per_million: 0.036
+          }
+        })],
+        platform: 'deepseek',
+        billingMode: 'token',
+        currency: 'CNY'
+      },
+      global: { stubs: { PlatformIcon: true } }
+    })
+
+    expect(wrapper.findAll('[data-testid="dimension-multiplier"]').map((item) => item.text())).toEqual([
+      '×0.12',
+      '×0.12',
+      '×0.36'
+    ])
+    expect(wrapper.get('[data-testid="mixed-multiplier-badge"]').text()).toBe('modelPlaza.table.dimensionPricing')
+    expect(wrapper.find('[data-testid="multiplier-badge"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('¥0.192')
+    expect(wrapper.text()).toContain('¥0.564')
+    expect(wrapper.text()).toContain('¥0.036')
+  })
+
+  it('shows a final price override without inventing a multiplier when the official price is unknown', () => {
+    const wrapper = mount(PlazaModelPricingTable, {
+      props: {
+        models: [model({
+          effective_multiplier: null,
+          effective_multipliers: {
+            input_per_million: 0.12,
+            output_per_million: 0.12,
+            cache_write_per_million: 0.12,
+            cache_read_per_million: 0.36
+          },
+          official_prices: {
+            input_per_million: 1.6,
+            output_per_million: 4.7,
+            cache_write_per_million: null,
+            cache_read_per_million: 0.1
+          },
+          display_price_overrides: {
+            input_per_million: null,
+            output_per_million: null,
+            cache_write_per_million: 0.024,
+            cache_read_per_million: 0.036
+          },
+          display_prices: {
+            input_per_million: 0.192,
+            output_per_million: 0.564,
+            cache_write_per_million: 0.024,
+            cache_read_per_million: 0.036
+          }
+        })],
+        platform: 'deepseek',
+        billingMode: 'token',
+        currency: 'CNY'
+      },
+      global: { stubs: { PlatformIcon: true } }
+    })
+
+    expect(wrapper.text()).toContain('¥0.024')
+    expect(wrapper.findAll('[data-testid="dimension-multiplier"]').map((item) => item.text())).toEqual([
+      '×0.12',
+      '×0.12',
+      '×0.36'
+    ])
+    expect(wrapper.find('[data-testid="multiplier-badge"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="mixed-multiplier-badge"]').exists()).toBe(true)
   })
 
   it('renders the three per-request tiers without any multiplier', () => {
