@@ -22,7 +22,8 @@ func TestDisplayPricingRepositoryProviderCRUD(t *testing.T) {
 	rate := 0.125
 
 	mock.ExpectQuery(`INSERT INTO display_pricing_providers`).
-		WithArgs("deepseek", "DeepSeek", "Peak hour note", "Request note", "Image note", "CNY", rate, "deepseek", "/logos/deepseek.svg", 20).
+		WithArgs("deepseek", "DeepSeek", "Peak hour note", "Request note", "Image note", "CNY", rate,
+			nil, nil, nil, nil, "deepseek", "/logos/deepseek.svg", 20).
 		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(now))
 	provider := &service.DisplayPricingProvider{
 		Provider: "deepseek", DisplayName: "DeepSeek", ProviderNote: "Peak hour note",
@@ -33,7 +34,8 @@ func TestDisplayPricingRepositoryProviderCRUD(t *testing.T) {
 	require.Equal(t, now, provider.UpdatedAt)
 
 	mock.ExpectQuery(`UPDATE display_pricing_providers`).
-		WithArgs("deepseek", "DeepSeek AI", "Updated note", "Updated request note", "Updated image note", "CNY", rate, "deepseek", "https://cdn.example.com/deepseek.svg", 21).
+		WithArgs("deepseek", "DeepSeek AI", "Updated note", "Updated request note", "Updated image note", "CNY", rate,
+			nil, nil, nil, nil, "deepseek", "https://cdn.example.com/deepseek.svg", 21).
 		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(now.Add(time.Second)))
 	provider.DisplayName = "DeepSeek AI"
 	provider.ProviderNote = "Updated note"
@@ -69,12 +71,12 @@ func TestDisplayPricingRepositoryProviderConflictAndNotFound(t *testing.T) {
 	provider := &service.DisplayPricingProvider{Provider: "custom", DisplayName: "Custom", Currency: "USD"}
 
 	mock.ExpectQuery(`INSERT INTO display_pricing_providers`).
-		WithArgs("custom", "Custom", "", "", "", "USD", nil, "", "", 0).
+		WithArgs("custom", "Custom", "", "", "", "USD", nil, nil, nil, nil, nil, "", "", 0).
 		WillReturnError(sql.ErrNoRows)
 	require.ErrorIs(t, repo.CreateProvider(ctx, provider), service.ErrDisplayProviderExists)
 
 	mock.ExpectQuery(`UPDATE display_pricing_providers`).
-		WithArgs("custom", "Custom", "", "", "", "USD", nil, "", "", 0).
+		WithArgs("custom", "Custom", "", "", "", "USD", nil, nil, nil, nil, nil, "", "", 0).
 		WillReturnError(sql.ErrNoRows)
 	require.ErrorIs(t, repo.UpdateProvider(ctx, provider), service.ErrDisplayProviderNotFound)
 
@@ -93,9 +95,12 @@ func TestDisplayPricingRepositoryListProvidersIncludesLogoAndModeNotes(t *testin
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 	now := time.Now()
-	mock.ExpectQuery(`SELECT provider, display_name, provider_note, per_request_note, image_note, currency, multiplier, logo_key, logo_url`).
-		WillReturnRows(sqlmock.NewRows([]string{"provider", "display_name", "provider_note", "per_request_note", "image_note", "currency", "multiplier", "logo_key", "logo_url", "sort_order", "updated_at"}).
-			AddRow("moonshot", "Kimi", "Token note", "Request note", "Image note", "CNY", 0.125, "kimi", "/logos/kimi.svg", 40, now))
+	mock.ExpectQuery(`SELECT provider, display_name, provider_note, per_request_note, image_note, currency, multiplier,\s+input_multiplier_override`).
+		WillReturnRows(sqlmock.NewRows([]string{"provider", "display_name", "provider_note", "per_request_note", "image_note", "currency", "multiplier",
+			"input_multiplier_override", "output_multiplier_override", "cache_write_multiplier_override", "cache_read_multiplier_override",
+			"logo_key", "logo_url", "sort_order", "updated_at"}).
+			AddRow("moonshot", "Kimi", "Token note", "Request note", "Image note", "CNY", 0.125,
+				nil, nil, nil, nil, "kimi", "/logos/kimi.svg", 40, now))
 
 	providers, err := NewDisplayPricingRepository(db).ListProviders(context.Background())
 	require.NoError(t, err)
@@ -151,5 +156,36 @@ func TestDisplayPricingRepositoryOfficialPriceConflictRollsBackWholeBatch(t *tes
 	mock.ExpectRollback()
 	err = NewDisplayPricingRepository(db).(*displayPricingRepository).ApplyOfficialPriceUpdates(context.Background(), updates)
 	require.ErrorIs(t, err, service.ErrOfficialPriceApplyConflict)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDisplayPricingRepositoryAppliesExactUpstreamPricesAndResetsFallbacksAtomically(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	officialInput, sellingInput, sellingCacheWrite := 9.8, 1.176, 0.2352
+	updates := []service.DisplayUpstreamTokenPriceUpdate{{
+		ModelID: 8, Provider: "zhipu", OfficialInput: &officialInput,
+		DisplayInput: &sellingInput, DisplayCacheWrite: &sellingCacheWrite,
+		OfficialPriceSource:    service.DisplayOfficialPriceX5M5X,
+		OfficialPriceSourceURL: service.DisplayUpstreamPriceSourceURL, SyncedAt: now,
+	}}
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT id FROM display_model_prices WHERE id=\$1 AND billing_mode='token' FOR UPDATE`).
+		WithArgs(int64(8)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(8)))
+	mock.ExpectQuery(`(?s)UPDATE display_model_prices SET.*model_multiplier=NULL.*input_multiplier_override=NULL.*WHERE id=\$1`).
+		WithArgs(int64(8), officialInput, nil, nil, nil, sellingInput, nil, sellingCacheWrite, nil,
+			service.DisplayOfficialPriceX5M5X, service.DisplayUpstreamPriceSourceURL, now).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(8)))
+	mock.ExpectExec(`(?s)UPDATE display_pricing_providers SET.*multiplier=\$2.*input_multiplier_override=NULL`).
+		WithArgs("zhipu", service.DisplayUpstreamPriceMarkup).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	changed, err := NewDisplayPricingRepository(db).(*displayPricingRepository).
+		ApplyUpstreamTokenDisplayPriceUpdates(context.Background(), updates)
+	require.NoError(t, err)
+	require.Equal(t, 1, changed)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

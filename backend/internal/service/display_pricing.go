@@ -55,17 +55,21 @@ type DisplayPricingSettings struct {
 }
 
 type DisplayPricingProvider struct {
-	Provider       string    `json:"provider"`
-	DisplayName    string    `json:"display_name"`
-	ProviderNote   string    `json:"provider_note"`
-	PerRequestNote string    `json:"per_request_note"`
-	ImageNote      string    `json:"image_note"`
-	Currency       string    `json:"currency"`
-	Multiplier     *float64  `json:"multiplier"`
-	LogoKey        string    `json:"logo_key"`
-	LogoURL        string    `json:"logo_url"`
-	SortOrder      int       `json:"sort_order"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	Provider                     string    `json:"provider"`
+	DisplayName                  string    `json:"display_name"`
+	ProviderNote                 string    `json:"provider_note"`
+	PerRequestNote               string    `json:"per_request_note"`
+	ImageNote                    string    `json:"image_note"`
+	Currency                     string    `json:"currency"`
+	Multiplier                   *float64  `json:"multiplier"`
+	InputMultiplierOverride      *float64  `json:"input_multiplier_override"`
+	OutputMultiplierOverride     *float64  `json:"output_multiplier_override"`
+	CacheWriteMultiplierOverride *float64  `json:"cache_write_multiplier_override"`
+	CacheReadMultiplierOverride  *float64  `json:"cache_read_multiplier_override"`
+	LogoKey                      string    `json:"logo_key"`
+	LogoURL                      string    `json:"logo_url"`
+	SortOrder                    int       `json:"sort_order"`
+	UpdatedAt                    time.Time `json:"updated_at"`
 }
 
 type DisplayImagePrice struct {
@@ -86,14 +90,22 @@ type DisplayModelPrice struct {
 	SortOrder   int
 	ModelNote   string
 
-	OfficialInputPerMillion      *float64
-	OfficialOutputPerMillion     *float64
-	OfficialCacheWritePerMillion *float64
-	OfficialCacheReadPerMillion  *float64
-	OfficialPriceSource          string
-	OfficialPriceSourceURL       string
-	OfficialPriceSyncedAt        *time.Time
-	ModelMultiplier              *float64
+	OfficialInputPerMillion             *float64
+	OfficialOutputPerMillion            *float64
+	OfficialCacheWritePerMillion        *float64
+	OfficialCacheReadPerMillion         *float64
+	OfficialPriceSource                 string
+	OfficialPriceSourceURL              string
+	OfficialPriceSyncedAt               *time.Time
+	ModelMultiplier                     *float64
+	InputMultiplierOverride             *float64
+	OutputMultiplierOverride            *float64
+	CacheWriteMultiplierOverride        *float64
+	CacheReadMultiplierOverride         *float64
+	DisplayInputPerMillionOverride      *float64
+	DisplayOutputPerMillionOverride     *float64
+	DisplayCacheWritePerMillionOverride *float64
+	DisplayCacheReadPerMillionOverride  *float64
 
 	PerRequestLTE256K          *float64
 	PerRequest256K512KOverride *float64
@@ -266,6 +278,15 @@ type DisplayTokenPrices struct {
 	CacheReadPerMillion  *float64 `json:"cache_read_per_million"`
 }
 
+// DisplayTokenMultipliers contains the final presentation-only multiplier for
+// each token dimension. Channel pricing and billing never consume this type.
+type DisplayTokenMultipliers struct {
+	InputPerMillion      float64 `json:"input_per_million"`
+	OutputPerMillion     float64 `json:"output_per_million"`
+	CacheWritePerMillion float64 `json:"cache_write_per_million"`
+	CacheReadPerMillion  float64 `json:"cache_read_per_million"`
+}
+
 type DisplayPerRequestPrices struct {
 	LTE256K      float64 `json:"lte_256k"`
 	From256K512K float64 `json:"from_256k_to_512k"`
@@ -273,37 +294,48 @@ type DisplayPerRequestPrices struct {
 }
 
 type DisplayCatalogModel struct {
-	ID                  *int64                   `json:"id,omitempty"`
-	Platform            string                   `json:"platform"`
-	ModelName           string                   `json:"model_name"`
-	ModelNote           string                   `json:"model_note"`
-	BillingMode         string                   `json:"billing_mode"`
-	Provider            string                   `json:"provider"`
-	Currency            string                   `json:"currency"`
-	Configured          bool                     `json:"configured"`
-	Enabled             bool                     `json:"enabled"`
-	OfficialPrices      *DisplayOfficialPrices   `json:"official_prices,omitempty"`
-	ModelMultiplier     *float64                 `json:"model_multiplier,omitempty"`
-	EffectiveMultiplier *float64                 `json:"effective_multiplier,omitempty"`
-	DisplayPrices       *DisplayTokenPrices      `json:"display_prices,omitempty"`
-	PerRequest          *DisplayPerRequestPrices `json:"per_request,omitempty"`
-	ImageBasePrices     []DisplayImagePrice      `json:"image_base_prices,omitempty"`
-	ImagePrices         []DisplayImagePrice      `json:"image_prices,omitempty"`
+	ID                           *int64                   `json:"id,omitempty"`
+	Platform                     string                   `json:"platform"`
+	ModelName                    string                   `json:"model_name"`
+	ModelNote                    string                   `json:"model_note"`
+	BillingMode                  string                   `json:"billing_mode"`
+	Provider                     string                   `json:"provider"`
+	Currency                     string                   `json:"currency"`
+	Configured                   bool                     `json:"configured"`
+	Enabled                      bool                     `json:"enabled"`
+	OfficialPrices               *DisplayOfficialPrices   `json:"official_prices,omitempty"`
+	ModelMultiplier              *float64                 `json:"model_multiplier,omitempty"`
+	InputMultiplierOverride      *float64                 `json:"input_multiplier_override,omitempty"`
+	OutputMultiplierOverride     *float64                 `json:"output_multiplier_override,omitempty"`
+	CacheWriteMultiplierOverride *float64                 `json:"cache_write_multiplier_override,omitempty"`
+	CacheReadMultiplierOverride  *float64                 `json:"cache_read_multiplier_override,omitempty"`
+	EffectiveMultiplier          *float64                 `json:"effective_multiplier,omitempty"`
+	EffectiveMultipliers         *DisplayTokenMultipliers `json:"effective_multipliers,omitempty"`
+	DisplayPriceOverrides        *DisplayTokenPrices      `json:"display_price_overrides,omitempty"`
+	DisplayPrices                *DisplayTokenPrices      `json:"display_prices,omitempty"`
+	PerRequest                   *DisplayPerRequestPrices `json:"per_request,omitempty"`
+	ImageBasePrices              []DisplayImagePrice      `json:"image_base_prices,omitempty"`
+	ImagePrices                  []DisplayImagePrice      `json:"image_prices,omitempty"`
 }
 
 type DisplayCatalogProvider struct {
-	Provider             string                `json:"provider"`
-	DisplayName          string                `json:"display_name"`
-	ProviderNote         string                `json:"provider_note"`
-	PerRequestNote       string                `json:"per_request_note"`
-	ImageNote            string                `json:"image_note"`
-	Currency             string                `json:"currency"`
-	LogoKey              string                `json:"logo_key"`
-	LogoURL              string                `json:"logo_url"`
-	ConfiguredMultiplier *float64              `json:"configured_multiplier,omitempty"`
-	EffectiveMultiplier  float64               `json:"effective_multiplier"`
-	Models               []DisplayCatalogModel `json:"models"`
-	SortOrder            int                   `json:"-"`
+	Provider                     string                   `json:"provider"`
+	DisplayName                  string                   `json:"display_name"`
+	ProviderNote                 string                   `json:"provider_note"`
+	PerRequestNote               string                   `json:"per_request_note"`
+	ImageNote                    string                   `json:"image_note"`
+	Currency                     string                   `json:"currency"`
+	LogoKey                      string                   `json:"logo_key"`
+	LogoURL                      string                   `json:"logo_url"`
+	ConfiguredMultiplier         *float64                 `json:"configured_multiplier,omitempty"`
+	EffectiveMultiplier          float64                  `json:"effective_multiplier"`
+	InputMultiplierOverride      *float64                 `json:"input_multiplier_override,omitempty"`
+	OutputMultiplierOverride     *float64                 `json:"output_multiplier_override,omitempty"`
+	CacheWriteMultiplierOverride *float64                 `json:"cache_write_multiplier_override,omitempty"`
+	CacheReadMultiplierOverride  *float64                 `json:"cache_read_multiplier_override,omitempty"`
+	EffectiveMultipliers         *DisplayTokenMultipliers `json:"effective_multipliers,omitempty"`
+	Models                       []DisplayCatalogModel    `json:"models"`
+	SortOrder                    int                      `json:"-"`
 }
 
 type DisplayPricingCatalog struct {
@@ -377,6 +409,7 @@ func (s *DisplayPricingService) BuildCatalog(ctx context.Context, groups []Plaza
 			if providerCfg.Multiplier != nil {
 				override = *providerCfg.Multiplier
 			}
+			providerMultipliers := effectiveProviderTokenMultipliers(providerCfg)
 			bucket = &DisplayCatalogProvider{
 				Provider: providerKey, DisplayName: providerCfg.DisplayName, Currency: providerCfg.Currency,
 				ProviderNote:   providerCfg.ProviderNote,
@@ -384,7 +417,12 @@ func (s *DisplayPricingService) BuildCatalog(ctx context.Context, groups []Plaza
 				ImageNote:      providerCfg.ImageNote,
 				LogoKey:        providerCfg.LogoKey, LogoURL: providerCfg.LogoURL,
 				ConfiguredMultiplier: providerCfg.Multiplier, EffectiveMultiplier: override,
-				Models: []DisplayCatalogModel{}, SortOrder: providerCfg.SortOrder,
+				InputMultiplierOverride:      providerCfg.InputMultiplierOverride,
+				OutputMultiplierOverride:     providerCfg.OutputMultiplierOverride,
+				CacheWriteMultiplierOverride: providerCfg.CacheWriteMultiplierOverride,
+				CacheReadMultiplierOverride:  providerCfg.CacheReadMultiplierOverride,
+				EffectiveMultipliers:         &providerMultipliers,
+				Models:                       []DisplayCatalogModel{}, SortOrder: providerCfg.SortOrder,
 			}
 			byProvider[providerKey] = bucket
 		}
@@ -499,11 +537,33 @@ func buildDisplayCatalogModel(d DiscoveredDisplayModel, p *DisplayModelPrice, pr
 			effective = *provider.Multiplier
 		}
 		model.ModelMultiplier = p.ModelMultiplier
-		model.EffectiveMultiplier = displayFloat64Ptr(effective)
 		if p.BillingMode == DisplayBillingModeToken {
+			multipliers := effectiveModelTokenMultipliers(p, provider)
+			model.InputMultiplierOverride = p.InputMultiplierOverride
+			model.OutputMultiplierOverride = p.OutputMultiplierOverride
+			model.CacheWriteMultiplierOverride = p.CacheWriteMultiplierOverride
+			model.CacheReadMultiplierOverride = p.CacheReadMultiplierOverride
+			model.EffectiveMultipliers = &multipliers
 			model.OfficialPrices = &DisplayOfficialPrices{p.OfficialInputPerMillion, p.OfficialOutputPerMillion, p.OfficialCacheWritePerMillion, p.OfficialCacheReadPerMillion}
-			model.DisplayPrices = &DisplayTokenPrices{multiplyFloatPtr(p.OfficialInputPerMillion, effective), multiplyFloatPtr(p.OfficialOutputPerMillion, effective), multiplyFloatPtr(p.OfficialCacheWritePerMillion, effective), multiplyFloatPtr(p.OfficialCacheReadPerMillion, effective)}
+			model.DisplayPriceOverrides = &DisplayTokenPrices{
+				p.DisplayInputPerMillionOverride, p.DisplayOutputPerMillionOverride,
+				p.DisplayCacheWritePerMillionOverride, p.DisplayCacheReadPerMillionOverride,
+			}
+			model.DisplayPrices = &DisplayTokenPrices{
+				displayPriceWithOverride(p.DisplayInputPerMillionOverride, p.OfficialInputPerMillion, &multipliers.InputPerMillion),
+				displayPriceWithOverride(p.DisplayOutputPerMillionOverride, p.OfficialOutputPerMillion, &multipliers.OutputPerMillion),
+				displayPriceWithOverride(p.DisplayCacheWritePerMillionOverride, p.OfficialCacheWritePerMillion, &multipliers.CacheWritePerMillion),
+				displayPriceWithOverride(p.DisplayCacheReadPerMillionOverride, p.OfficialCacheReadPerMillion, &multipliers.CacheReadPerMillion),
+			}
+			// When an exact override and an official base both exist, expose the
+			// actual ratio customers see rather than the unused fallback factor.
+			multipliers = effectiveMultipliersFromDisplayPrices(multipliers, model.OfficialPrices, model.DisplayPrices)
+			model.EffectiveMultipliers = &multipliers
+			if uniform, ok := uniformTokenMultiplier(multipliers); ok {
+				model.EffectiveMultiplier = displayFloat64Ptr(uniform)
+			}
 		} else {
+			model.EffectiveMultiplier = displayFloat64Ptr(effective)
 			model.ImageBasePrices = cloneImagePrices(p.ImagePrices)
 			model.ImagePrices = make([]DisplayImagePrice, 0, len(p.ImagePrices))
 			for _, tier := range p.ImagePrices {
@@ -512,6 +572,85 @@ func buildDisplayCatalogModel(d DiscoveredDisplayModel, p *DisplayModelPrice, pr
 		}
 	}
 	return model
+}
+
+func effectiveProviderTokenMultipliers(provider DisplayPricingProvider) DisplayTokenMultipliers {
+	fallback := DisplayGlobalMultiplier
+	if provider.Multiplier != nil {
+		fallback = *provider.Multiplier
+	}
+	return DisplayTokenMultipliers{
+		InputPerMillion:      displayMultiplierOr(provider.InputMultiplierOverride, fallback),
+		OutputPerMillion:     displayMultiplierOr(provider.OutputMultiplierOverride, fallback),
+		CacheWritePerMillion: displayMultiplierOr(provider.CacheWriteMultiplierOverride, fallback),
+		CacheReadPerMillion:  displayMultiplierOr(provider.CacheReadMultiplierOverride, fallback),
+	}
+}
+
+func effectiveModelTokenMultipliers(model *DisplayModelPrice, provider DisplayPricingProvider) DisplayTokenMultipliers {
+	providerValues := effectiveProviderTokenMultipliers(provider)
+	return DisplayTokenMultipliers{
+		InputPerMillion:      effectiveDisplayDimensionMultiplier(model.InputMultiplierOverride, model.ModelMultiplier, provider.InputMultiplierOverride, provider.Multiplier, providerValues.InputPerMillion),
+		OutputPerMillion:     effectiveDisplayDimensionMultiplier(model.OutputMultiplierOverride, model.ModelMultiplier, provider.OutputMultiplierOverride, provider.Multiplier, providerValues.OutputPerMillion),
+		CacheWritePerMillion: effectiveDisplayDimensionMultiplier(model.CacheWriteMultiplierOverride, model.ModelMultiplier, provider.CacheWriteMultiplierOverride, provider.Multiplier, providerValues.CacheWritePerMillion),
+		CacheReadPerMillion:  effectiveDisplayDimensionMultiplier(model.CacheReadMultiplierOverride, model.ModelMultiplier, provider.CacheReadMultiplierOverride, provider.Multiplier, providerValues.CacheReadPerMillion),
+	}
+}
+
+func effectiveDisplayDimensionMultiplier(modelDimension, modelUnified, providerDimension, providerUnified *float64, fallback float64) float64 {
+	if modelDimension != nil {
+		return *modelDimension
+	}
+	if modelUnified != nil {
+		return *modelUnified
+	}
+	if providerDimension != nil {
+		return *providerDimension
+	}
+	if providerUnified != nil {
+		return *providerUnified
+	}
+	return fallback
+}
+
+func displayMultiplierOr(value *float64, fallback float64) float64 {
+	if value != nil {
+		return *value
+	}
+	return fallback
+}
+
+func uniformTokenMultiplier(values DisplayTokenMultipliers) (float64, bool) {
+	input := values.InputPerMillion
+	return input, input == values.OutputPerMillion && input == values.CacheWritePerMillion && input == values.CacheReadPerMillion
+}
+
+func displayPriceWithOverride(exact, official, multiplier *float64) *float64 {
+	if exact != nil {
+		return displayFloat64Ptr(*exact)
+	}
+	if multiplier == nil {
+		return nil
+	}
+	return multiplyFloatPtr(official, *multiplier)
+}
+
+func effectiveMultipliersFromDisplayPrices(values DisplayTokenMultipliers, official *DisplayOfficialPrices, display *DisplayTokenPrices) DisplayTokenMultipliers {
+	if official == nil || display == nil {
+		return values
+	}
+	values.InputPerMillion = displayPriceRatioOr(values.InputPerMillion, official.InputPerMillion, display.InputPerMillion)
+	values.OutputPerMillion = displayPriceRatioOr(values.OutputPerMillion, official.OutputPerMillion, display.OutputPerMillion)
+	values.CacheWritePerMillion = displayPriceRatioOr(values.CacheWritePerMillion, official.CacheWritePerMillion, display.CacheWritePerMillion)
+	values.CacheReadPerMillion = displayPriceRatioOr(values.CacheReadPerMillion, official.CacheReadPerMillion, display.CacheReadPerMillion)
+	return values
+}
+
+func displayPriceRatioOr(fallback float64, official, display *float64) float64 {
+	if official == nil || display == nil || *official <= 0 {
+		return fallback
+	}
+	return *display / *official
 }
 
 func normalizeAndValidateDisplayModelPrice(p *DisplayModelPrice) error {
@@ -538,14 +677,24 @@ func normalizeAndValidateDisplayModelPrice(p *DisplayModelPrice) error {
 	if len([]rune(p.ModelNote)) > maxDisplayModelNoteLength {
 		return ErrDisplayPriceInvalid
 	}
-	values := []*float64{p.OfficialInputPerMillion, p.OfficialOutputPerMillion, p.OfficialCacheWritePerMillion, p.OfficialCacheReadPerMillion, p.PerRequestLTE256K, p.PerRequest256K512KOverride, p.PerRequestGT512KOverride}
+	values := []*float64{
+		p.OfficialInputPerMillion, p.OfficialOutputPerMillion, p.OfficialCacheWritePerMillion, p.OfficialCacheReadPerMillion,
+		p.DisplayInputPerMillionOverride, p.DisplayOutputPerMillionOverride,
+		p.DisplayCacheWritePerMillionOverride, p.DisplayCacheReadPerMillionOverride,
+		p.PerRequestLTE256K, p.PerRequest256K512KOverride, p.PerRequestGT512KOverride,
+	}
 	for _, v := range values {
 		if v != nil && !validNonNegative(*v) {
 			return ErrDisplayPricingInvalidValue
 		}
 	}
-	if p.ModelMultiplier != nil && !validPositive(*p.ModelMultiplier) {
-		return ErrDisplayPricingInvalidValue
+	for _, multiplier := range []*float64{
+		p.ModelMultiplier, p.InputMultiplierOverride, p.OutputMultiplierOverride,
+		p.CacheWriteMultiplierOverride, p.CacheReadMultiplierOverride,
+	} {
+		if multiplier != nil && !validPositive(*multiplier) {
+			return ErrDisplayPricingInvalidValue
+		}
 	}
 	for i := range p.ImagePrices {
 		p.ImagePrices[i].Label = strings.TrimSpace(p.ImagePrices[i].Label)
@@ -567,6 +716,10 @@ func normalizeAndValidateDisplayModelPrice(p *DisplayModelPrice) error {
 		}
 		p.OfficialInputPerMillion, p.OfficialOutputPerMillion, p.OfficialCacheWritePerMillion, p.OfficialCacheReadPerMillion = nil, nil, nil, nil
 		p.ModelMultiplier = nil
+		p.InputMultiplierOverride, p.OutputMultiplierOverride = nil, nil
+		p.CacheWriteMultiplierOverride, p.CacheReadMultiplierOverride = nil, nil
+		p.DisplayInputPerMillionOverride, p.DisplayOutputPerMillionOverride = nil, nil
+		p.DisplayCacheWritePerMillionOverride, p.DisplayCacheReadPerMillionOverride = nil, nil
 		// There is one source of truth for per-request pricing. The two public
 		// higher tiers are always derived as 1.5x and 2x from this first tier.
 		p.PerRequest256K512KOverride = nil
@@ -581,6 +734,10 @@ func normalizeAndValidateDisplayModelPrice(p *DisplayModelPrice) error {
 		}
 		p.OfficialInputPerMillion, p.OfficialOutputPerMillion, p.OfficialCacheWritePerMillion, p.OfficialCacheReadPerMillion = nil, nil, nil, nil
 		p.PerRequestLTE256K, p.PerRequest256K512KOverride, p.PerRequestGT512KOverride = nil, nil, nil
+		p.InputMultiplierOverride, p.OutputMultiplierOverride = nil, nil
+		p.CacheWriteMultiplierOverride, p.CacheReadMultiplierOverride = nil, nil
+		p.DisplayInputPerMillionOverride, p.DisplayOutputPerMillionOverride = nil, nil
+		p.DisplayCacheWritePerMillionOverride, p.DisplayCacheReadPerMillionOverride = nil, nil
 		p.OfficialPriceSource = DisplayOfficialPriceManual
 		p.OfficialPriceSourceURL = ""
 		p.OfficialPriceSyncedAt = nil
@@ -613,11 +770,23 @@ func normalizeAndValidateDisplayProvider(p *DisplayPricingProvider) error {
 		len([]rune(p.PerRequestNote)) > maxDisplayProviderNoteLength ||
 		len([]rune(p.ImageNote)) > maxDisplayProviderNoteLength ||
 		!validDisplayCurrency(p.Currency) ||
-		(p.Multiplier != nil && !validPositive(*p.Multiplier)) ||
+		!validDisplayProviderMultipliers(p) ||
 		(p.LogoKey != "" && !displayProviderKeyPattern.MatchString(p.LogoKey)) || !validDisplayLogoURL(p.LogoURL) {
 		return ErrDisplayProviderInvalid
 	}
 	return nil
+}
+
+func validDisplayProviderMultipliers(p *DisplayPricingProvider) bool {
+	for _, multiplier := range []*float64{
+		p.Multiplier, p.InputMultiplierOverride, p.OutputMultiplierOverride,
+		p.CacheWriteMultiplierOverride, p.CacheReadMultiplierOverride,
+	} {
+		if multiplier != nil && !validPositive(*multiplier) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *DisplayPricingService) validateDisplayModelProvider(ctx context.Context, price *DisplayModelPrice) error {

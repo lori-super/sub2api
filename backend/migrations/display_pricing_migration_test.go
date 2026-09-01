@@ -121,3 +121,20 @@ func TestDisplayPricingRulesMigrationLocksFinalMultiplierAndPerRequestShape(t *t
 		require.NotRegexp(t, regexp.MustCompile(`(?mi)^\s*(?:UPDATE|ALTER|INSERT\s+INTO|DELETE\s+FROM)\s+`+regexp.QuoteMeta(productionTable)+`\b`), sql)
 	}
 }
+
+func TestDisplayPricingDimensionOverridesMigrationIsPresentationOnly(t *testing.T) {
+	content, err := FS.ReadFile("243_display_pricing_dimension_multipliers.sql")
+	require.NoError(t, err)
+	sql := string(content)
+	normalized := strings.Join(strings.Fields(sql), " ")
+	for _, column := range []string{
+		"input_multiplier_override", "output_multiplier_override", "cache_write_multiplier_override", "cache_read_multiplier_override",
+		"display_input_per_million_override", "display_output_per_million_override",
+		"display_cache_write_per_million_override", "display_cache_read_per_million_override",
+	} {
+		require.Contains(t, normalized, column)
+	}
+	for _, productionTable := range []string{"groups", "channels", "channel_model_pricing", "usage_logs"} {
+		require.NotRegexp(t, regexp.MustCompile(`(?mi)^\s*(?:UPDATE|ALTER|INSERT\s+INTO|DELETE\s+FROM)\s+`+regexp.QuoteMeta(productionTable)+`\b`), sql)
+	}
+}
