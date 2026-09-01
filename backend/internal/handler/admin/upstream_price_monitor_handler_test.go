@@ -17,6 +17,12 @@ type runActionMonitorRepository struct {
 	service.UpstreamPriceMonitorRepository
 }
 
+func (r *runActionMonitorRepository) GetConfig(context.Context) (*domain.UpstreamPriceMonitorConfig, error) {
+	cfg := domain.DefaultUpstreamPriceMonitorConfig()
+	cfg.Mode = domain.UpstreamPriceMonitorModeReview
+	return &cfg, nil
+}
+
 func (r *runActionMonitorRepository) GetRun(context.Context, int64) (*domain.UpstreamPriceMonitorRun, error) {
 	return nil, service.ErrUpstreamPriceRunNotApplicable
 }

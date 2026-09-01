@@ -304,7 +304,6 @@ func (r *displayPricingRepository) ApplyUpstreamTokenDisplayPriceUpdates(ctx con
 	}
 	defer func() { _ = tx.Rollback() }()
 	changed := 0
-	providers := make(map[string]struct{})
 	for i := range updates {
 		update := updates[i]
 		var lockedID int64
@@ -320,8 +319,6 @@ func (r *displayPricingRepository) ApplyUpstreamTokenDisplayPriceUpdates(ctx con
 			official_cache_write_per_million=ROUND($4::numeric,8), official_cache_read_per_million=ROUND($5::numeric,8),
 			display_input_per_million_override=ROUND($6::numeric,8), display_output_per_million_override=ROUND($7::numeric,8),
 			display_cache_write_per_million_override=ROUND($8::numeric,8), display_cache_read_per_million_override=ROUND($9::numeric,8),
-			model_multiplier=NULL, input_multiplier_override=NULL, output_multiplier_override=NULL,
-			cache_write_multiplier_override=NULL, cache_read_multiplier_override=NULL,
 			official_price_source=$10, official_price_source_url=$11, official_price_synced_at=$12,
 			updated_at=NOW()
 			WHERE id=$1 AND billing_mode='token' AND (
@@ -329,8 +326,6 @@ func (r *displayPricingRepository) ApplyUpstreamTokenDisplayPriceUpdates(ctx con
 				official_cache_write_per_million IS DISTINCT FROM ROUND($4::numeric,8) OR official_cache_read_per_million IS DISTINCT FROM ROUND($5::numeric,8) OR
 				display_input_per_million_override IS DISTINCT FROM ROUND($6::numeric,8) OR display_output_per_million_override IS DISTINCT FROM ROUND($7::numeric,8) OR
 				display_cache_write_per_million_override IS DISTINCT FROM ROUND($8::numeric,8) OR display_cache_read_per_million_override IS DISTINCT FROM ROUND($9::numeric,8) OR
-				model_multiplier IS NOT NULL OR input_multiplier_override IS NOT NULL OR output_multiplier_override IS NOT NULL OR
-				cache_write_multiplier_override IS NOT NULL OR cache_read_multiplier_override IS NOT NULL OR
 				official_price_source IS DISTINCT FROM $10 OR official_price_source_url IS DISTINCT FROM $11
 			)
 			RETURNING id`, update.ModelID,
@@ -340,18 +335,6 @@ func (r *displayPricingRepository) ApplyUpstreamTokenDisplayPriceUpdates(ctx con
 		if err == nil {
 			changed++
 		} else if err != sql.ErrNoRows {
-			return 0, err
-		}
-		providers[update.Provider] = struct{}{}
-	}
-	for provider := range providers {
-		if _, err := tx.ExecContext(ctx, `UPDATE display_pricing_providers SET
-			multiplier=$2, input_multiplier_override=NULL, output_multiplier_override=NULL,
-			cache_write_multiplier_override=NULL, cache_read_multiplier_override=NULL, updated_at=NOW()
-			WHERE provider=$1 AND (
-				multiplier IS DISTINCT FROM $2 OR input_multiplier_override IS NOT NULL OR output_multiplier_override IS NOT NULL OR
-				cache_write_multiplier_override IS NOT NULL OR cache_read_multiplier_override IS NOT NULL
-			)`, provider, service.DisplayUpstreamProviderFallbackMultiplier); err != nil {
 			return 0, err
 		}
 	}

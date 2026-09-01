@@ -203,7 +203,7 @@ func TestUpstreamPriceMonitorRunnerRetriesPerRequestSyncAfterOneHour(t *testing.
 	require.Equal(t, 2, fetcher.callCount())
 }
 
-func TestUpstreamPriceMonitorRunnerSchedulesTokenDisplaySyncWithPerRequestClock(t *testing.T) {
+func TestUpstreamPriceMonitorRunnerNeverAutoSyncsTokenDisplayFromPricePage(t *testing.T) {
 	first, official, selling := 0.01, 1.6, 0.16
 	cfg := domain.DefaultUpstreamPriceMonitorConfig()
 	cfg.Enabled = false
@@ -233,13 +233,13 @@ func TestUpstreamPriceMonitorRunnerSchedulesTokenDisplaySyncWithPerRequestClock(
 
 	runner.runIfDue()
 	require.Equal(t, 1, fetcher.callCount())
-	require.Equal(t, 1, fetcher.tokenCallCount())
-	require.Len(t, displayRepo.updates, 1)
-	require.InDelta(t, 0.192, *displayRepo.updates[0].DisplayInput, 1e-12)
+	require.Zero(t, fetcher.tokenCallCount())
+	require.Empty(t, displayRepo.updates)
 	clock = clock.Add(23*time.Hour + 59*time.Minute)
 	runner.runIfDue()
-	require.Equal(t, 1, fetcher.tokenCallCount())
+	require.Zero(t, fetcher.tokenCallCount())
 	clock = clock.Add(time.Minute)
 	runner.runIfDue()
-	require.Equal(t, 2, fetcher.tokenCallCount())
+	require.Zero(t, fetcher.tokenCallCount())
+	require.Equal(t, 2, fetcher.callCount(), "per-request page sync keeps its independent daily schedule")
 }
