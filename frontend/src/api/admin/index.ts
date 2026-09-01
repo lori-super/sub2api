@@ -135,6 +135,7 @@ export type {
 } from './plugins'
 export type {
   DisplayPricingSettings,
+  UpstreamTokenDisplayPriceSyncResult,
   DisplayPricingProvider,
   DisplayPricingProviderCreateInput,
   DisplayPricingProviderUpdateInput,

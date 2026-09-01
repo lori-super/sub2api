@@ -7,6 +7,12 @@ export interface DisplayPricingSettings {
   updated_at: string
 }
 
+export interface UpstreamTokenDisplayPriceSyncResult {
+  source_models: number
+  matched_models: number
+  updated_models: number
+}
+
 export interface DisplayPricingProvider {
   provider: string
   display_name: string
@@ -180,6 +186,13 @@ export async function listModels(): Promise<DisplayPricingModel[]> {
   return data.items
 }
 
+export async function syncUpstreamTokenDisplayPrices(): Promise<UpstreamTokenDisplayPriceSyncResult> {
+  const { data } = await apiClient.post<UpstreamTokenDisplayPriceSyncResult>(
+    '/admin/display-pricing/upstream-token-sync'
+  )
+  return data
+}
+
 /**
  * The customer-facing per-request catalogue always uses a fixed three-tier
  * curve: base / base x 1.5 / base x 2. Older records may still contain manual
@@ -246,6 +259,7 @@ const displayPricingAPI = {
   updateProvider,
   deleteProvider,
   listModels,
+  syncUpstreamTokenDisplayPrices,
   createModel,
   updateModel,
   deleteModel,

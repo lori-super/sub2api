@@ -131,4 +131,14 @@ describe('display pricing APIs', () => {
       per_request_gt_512k_override: null
     })
   })
+
+  it('syncs upstream public token prices through the isolated display-only endpoint', async () => {
+    const response = { source_models: 48, matched_models: 19, updated_models: 19 }
+    post.mockResolvedValue({ data: response })
+
+    await expect(displayPricingAPI.syncUpstreamTokenDisplayPrices()).resolves.toEqual(response)
+
+    expect(post).toHaveBeenCalledWith('/admin/display-pricing/upstream-token-sync')
+    expect(put).not.toHaveBeenCalled()
+  })
 })

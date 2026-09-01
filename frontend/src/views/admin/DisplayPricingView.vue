@@ -14,11 +14,27 @@
               {{ t('admin.displayPricing.description') }}
             </p>
           </div>
-          <div class="flex flex-wrap gap-2">
-            <RouterLink to="/model-prices" class="btn btn-secondary">
-              <Icon name="eye" size="sm" />
-              {{ t('admin.displayPricing.preview') }}
-            </RouterLink>
+          <div class="flex max-w-xl flex-col items-stretch gap-2 sm:items-end">
+            <div class="flex flex-wrap gap-2 sm:justify-end">
+              <button
+                type="button"
+                class="btn btn-primary"
+                :disabled="syncingUpstreamPrices"
+                :title="t('admin.displayPricing.upstreamSync.hint')"
+                data-testid="upstream-token-sync"
+                @click="syncUpstreamPrices"
+              >
+                <Icon name="refresh" size="sm" :class="syncingUpstreamPrices ? 'animate-spin' : ''" />
+                {{ syncingUpstreamPrices ? t('admin.displayPricing.upstreamSync.syncing') : t('admin.displayPricing.upstreamSync.button') }}
+              </button>
+              <RouterLink to="/model-prices" class="btn btn-secondary">
+                <Icon name="eye" size="sm" />
+                {{ t('admin.displayPricing.preview') }}
+              </RouterLink>
+            </div>
+            <p class="text-left text-[11px] leading-5 text-gray-500 dark:text-dark-400 sm:text-right">
+              {{ t('admin.displayPricing.upstreamSync.hint') }}
+            </p>
           </div>
         </div>
         <div class="mt-4 flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200">
@@ -598,6 +614,7 @@ const activePanel = ref<'configuration' | 'official'>('configuration')
 const loading = ref(true)
 const savingProvider = ref(false)
 const savingModel = ref(false)
+const syncingUpstreamPrices = ref(false)
 const providerDrafts = ref<DisplayPricingProvider[]>([])
 const models = ref<DisplayPricingModel[]>([])
 const discoveredModels = ref<DiscoveredDisplayModel[]>([])
@@ -740,6 +757,24 @@ async function loadData(): Promise<void> {
     console.error(error)
   } finally {
     loading.value = false
+  }
+}
+
+async function syncUpstreamPrices(): Promise<void> {
+  if (syncingUpstreamPrices.value) return
+  syncingUpstreamPrices.value = true
+  try {
+    const result = await adminAPI.displayPricing.syncUpstreamTokenDisplayPrices()
+    await loadData()
+    notifyDisplayPricingUpdated()
+    appStore.showSuccess(t('admin.displayPricing.upstreamSync.success', {
+      updated: result.updated_models,
+      source: result.source_models
+    }))
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, t('admin.displayPricing.upstreamSync.failed')))
+  } finally {
+    syncingUpstreamPrices.value = false
   }
 }
 

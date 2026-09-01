@@ -12,6 +12,13 @@ export default {
     loadFailed: 'Failed to load display pricing',
     saveFailed: 'Failed to save display pricing',
     saved: 'Display pricing saved',
+    upstreamSync: {
+      button: 'Sync upstream display prices',
+      syncing: 'Syncing…',
+      hint: 'Updates only the official references and displayed selling prices for 19 domestic usage-based models (upstream public selling price × 1.2). Channel pricing and actual billing are unchanged.',
+      success: 'Sync complete: updated {updated} domestic usage-based display prices from {source} upstream models.',
+      failed: 'Failed to sync upstream display prices'
+    },
     currency: 'Display currency',
     sortOrder: 'Order',
     global: {
