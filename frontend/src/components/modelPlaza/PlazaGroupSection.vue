@@ -67,6 +67,7 @@
       :platform="provider"
       :billing-mode="billingMode"
       :currency="currency"
+      :primary-multiplier="primaryMultiplier"
     />
   </section>
 </template>
@@ -98,6 +99,7 @@ const props = defineProps<{
   currency: DisplayPriceCurrency
   billingMode: BillingMode
   models: DisplayPriceModel[]
+  primaryMultiplier?: number | null
   sectionId?: string
 }>()
 

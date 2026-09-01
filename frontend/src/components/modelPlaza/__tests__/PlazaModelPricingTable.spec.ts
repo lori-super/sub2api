@@ -65,10 +65,11 @@ describe('PlazaModelPricingTable', () => {
     expect(wrapper.text()).toContain('$1.25')
     expect(wrapper.text()).toContain('$4')
     expect(wrapper.text()).toContain('$5')
-    expect(wrapper.text()).toContain('×1.25')
+    expect(wrapper.text()).toContain('1.25×')
     expect(wrapper.findAll('[data-testid="official-price"]')).toHaveLength(4)
     expect(wrapper.findAll('[data-testid="site-price"]')).toHaveLength(4)
     expect(wrapper.text()).toContain('modelPlaza.table.displayMultiplier')
+    expect(wrapper.text()).toContain('modelPlaza.table.siteOfficialRatio')
     expect(wrapper.get('table').classes()).toContain('table-fixed')
     expect(wrapper.get('[data-testid="token-columns"]').findAll('col')).toHaveLength(6)
     expect(wrapper.get('[data-testid="multiplier-badge"]').classes()).toEqual(
@@ -101,11 +102,17 @@ describe('PlazaModelPricingTable', () => {
     expect(wrapper.get('[data-testid="model-note"]').text()).toBe('资源紧张，价格将适时下调。')
   })
 
-  it('shows each token dimension multiplier and replaces a misleading unified badge for mixed pricing', () => {
+  it('keeps mixed token multipliers only in the right column as a range', () => {
     const wrapper = mount(PlazaModelPricingTable, {
       props: {
         models: [model({
           effective_multiplier: null,
+          official_prices: {
+            input_per_million: 1.6,
+            output_per_million: 4.7,
+            cache_write_per_million: null,
+            cache_read_per_million: 0.1
+          },
           effective_multipliers: {
             input_per_million: 0.12,
             output_per_million: 0.12,
@@ -126,13 +133,9 @@ describe('PlazaModelPricingTable', () => {
       global: { stubs: { PlatformIcon: true } }
     })
 
-    expect(wrapper.findAll('[data-testid="dimension-multiplier"]').map((item) => item.text())).toEqual([
-      '×0.12',
-      '×0.12',
-      '×0.36'
-    ])
-    expect(wrapper.get('[data-testid="mixed-multiplier-badge"]').text()).toBe('modelPlaza.table.dimensionPricing')
-    expect(wrapper.find('[data-testid="multiplier-badge"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="dimension-multiplier"]')).toHaveLength(0)
+    expect(wrapper.get('[data-testid="multiplier-badge"]').text()).toBe('0.12–0.36×')
+    expect(wrapper.find('[data-testid="mixed-multiplier-badge"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('¥0.192')
     expect(wrapper.text()).toContain('¥0.564')
     expect(wrapper.text()).toContain('¥0.036')
@@ -176,13 +179,9 @@ describe('PlazaModelPricingTable', () => {
     })
 
     expect(wrapper.text()).toContain('¥0.024')
-    expect(wrapper.findAll('[data-testid="dimension-multiplier"]').map((item) => item.text())).toEqual([
-      '×0.12',
-      '×0.12',
-      '×0.36'
-    ])
-    expect(wrapper.find('[data-testid="multiplier-badge"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="mixed-multiplier-badge"]').exists()).toBe(true)
+    expect(wrapper.findAll('[data-testid="dimension-multiplier"]')).toHaveLength(0)
+    expect(wrapper.get('[data-testid="multiplier-badge"]').text()).toBe('0.12–0.36×')
+    expect(wrapper.find('[data-testid="mixed-multiplier-badge"]').exists()).toBe(false)
   })
 
   it('renders the three per-request tiers without any multiplier', () => {
