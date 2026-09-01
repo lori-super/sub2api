@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestApplyUpstreamTokenBaseIntervalsPreservesMultiplierOnlyFields(t *testing.T) {
+func TestApplyUpstreamTokenBaseIntervalsRejectsMultiplierOnlyTargetDimension(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
@@ -28,23 +28,25 @@ func TestApplyUpstreamTokenBaseIntervalsPreservesMultiplierOnlyFields(t *testing
 			"id", "input_price", "output_price", "cache_write_price", "cache_read_price", "per_request_price",
 			"has_input_multiplier", "has_output_multiplier", "has_cache_write_multiplier", "has_cache_read_multiplier",
 		}).AddRow(int64(101), nil, "0.000002", nil, nil, nil, true, false, false, false))
-	mock.ExpectExec(`UPDATE channel_pricing_intervals SET`).
-		WithArgs(int64(101), nil, "0.000003", nil, nil).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
 	snapshot := &upstreamPriceRollbackSnapshot{}
 	changed, err := applyUpstreamTokenBaseIntervals(
 		context.Background(), tx, 44, "0.000001", "0.000003", nil, nil, snapshot,
 	)
-	require.NoError(t, err)
-	require.True(t, changed)
-	require.Len(t, snapshot.Intervals, 1)
-	require.Nil(t, snapshot.Intervals[0].InputPrice)
-	require.Equal(t, "0.000002", *snapshot.Intervals[0].OutputPrice)
+	require.ErrorIs(t, err, service.ErrUpstreamPriceRunNotApplicable)
+	require.Contains(t, err.Error(), "input multiplier")
+	require.False(t, changed)
+	require.Empty(t, snapshot.Intervals)
 
 	mock.ExpectRollback()
 	require.NoError(t, tx.Rollback())
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRequireUpstreamModelChannelMatchRejectsUnpairedDisplayWrite(t *testing.T) {
+	require.NoError(t, requireUpstreamModelChannelMatch("deepseek-ok", 1))
+	err := requireUpstreamModelChannelMatch("deepseek-missing", 0)
+	require.ErrorIs(t, err, service.ErrUpstreamPriceRunNotApplicable)
+	require.Contains(t, err.Error(), "deepseek-missing")
 }
 
 func TestCalculateDisplayMultiplierUsesHalfUpRounding(t *testing.T) {
