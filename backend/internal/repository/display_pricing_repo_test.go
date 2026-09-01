@@ -179,7 +179,7 @@ func TestDisplayPricingRepositoryAppliesExactUpstreamPricesAndResetsFallbacksAto
 			service.DisplayOfficialPriceX5M5X, service.DisplayUpstreamPriceSourceURL, now).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(8)))
 	mock.ExpectExec(`(?s)UPDATE display_pricing_providers SET.*multiplier=\$2.*input_multiplier_override=NULL`).
-		WithArgs("zhipu", service.DisplayUpstreamPriceMarkup).
+		WithArgs("zhipu", service.DisplayUpstreamProviderFallbackMultiplier).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 

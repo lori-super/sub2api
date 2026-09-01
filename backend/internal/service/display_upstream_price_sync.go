@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	DisplayUpstreamPriceMarkup    = 1.2
-	DisplayOfficialPriceX5M5X     = "x5m5x_public_pricing"
-	DisplayUpstreamPriceSourceURL = x5m5xPricingPageURL
+	DisplayUpstreamPriceMarkup                = 1.2
+	DisplayUpstreamProviderFallbackMultiplier = 0.12
+	DisplayOfficialPriceX5M5X                 = "x5m5x_public_pricing"
+	DisplayUpstreamPriceSourceURL             = x5m5xPricingPageURL
 )
 
 type DisplayUpstreamTokenPriceUpdate struct {

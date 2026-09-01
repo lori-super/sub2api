@@ -351,7 +351,7 @@ func (r *displayPricingRepository) ApplyUpstreamTokenDisplayPriceUpdates(ctx con
 			WHERE provider=$1 AND (
 				multiplier IS DISTINCT FROM $2 OR input_multiplier_override IS NOT NULL OR output_multiplier_override IS NOT NULL OR
 				cache_write_multiplier_override IS NOT NULL OR cache_read_multiplier_override IS NOT NULL
-			)`, provider, service.DisplayUpstreamPriceMarkup); err != nil {
+			)`, provider, service.DisplayUpstreamProviderFallbackMultiplier); err != nil {
 			return 0, err
 		}
 	}
