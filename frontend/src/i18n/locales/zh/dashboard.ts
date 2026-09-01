@@ -606,7 +606,6 @@ export default {
     description: '浏览当前展示的模型价格',
     dynamicDescription: '按厂商查看按量、按次与生图模型的展示价格，后台调价后会自动同步。',
     liveCatalog: '实时展示价格',
-    displayOnlyNotice: '本页价格仅供展示，与渠道成本、账户调度及实际扣费配置完全独立。',
     sections: {
       token: {
         eyebrow: '按 Token 用量',
