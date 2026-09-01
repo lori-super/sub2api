@@ -193,6 +193,33 @@ func TestDisplayPricingPerRequestOverridesAndDropsMultiplier(t *testing.T) {
 	require.Nil(t, item.ModelMultiplier)
 	require.Nil(t, item.PerRequest256K512KOverride)
 	require.Nil(t, item.PerRequestGT512KOverride)
+	require.NotNil(t, item.ImagePrices)
+	require.Empty(t, item.ImagePrices)
+}
+
+func TestDisplayPricingTokenUpdateUsesCanonicalEmptyImagePrices(t *testing.T) {
+	input, output, cacheRead, multiplier := 1.6, 4.7, 0.1, 0.12
+	repo := &stubDisplayPricingRepo{
+		providers: []DisplayPricingProvider{{Provider: "deepseek", DisplayName: "DeepSeek", Currency: "CNY"}},
+		models: []DisplayModelPrice{{
+			ID: 102, Platform: "openai", ModelName: "deepseek-v4-flash-vision-exp",
+			Provider: "deepseek", BillingMode: DisplayBillingModeToken, Currency: "CNY", Enabled: true,
+		}},
+	}
+
+	item, err := NewDisplayPricingService(repo).UpdateModel(context.Background(), 102, DisplayModelPrice{
+		Platform: "openai", ModelName: "deepseek-v4-flash-vision-exp", Provider: "deepseek",
+		BillingMode: DisplayBillingModeToken, Currency: "CNY", Enabled: true,
+		OfficialInputPerMillion: &input, OfficialOutputPerMillion: &output,
+		OfficialCacheReadPerMillion: &cacheRead, ModelMultiplier: &multiplier,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, item.ImagePrices)
+	require.Empty(t, item.ImagePrices)
+
+	encoded, err := json.Marshal(item.ImagePrices)
+	require.NoError(t, err)
+	require.JSONEq(t, `[]`, string(encoded), "non-image rows must satisfy the database image_prices = [] constraint")
 }
 
 func TestDisplayPricingImageUsesDisplayMultiplier(t *testing.T) {
