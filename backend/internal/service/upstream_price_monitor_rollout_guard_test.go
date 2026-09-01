@@ -19,6 +19,8 @@ type upstreamPriceAutoApplyRepository struct {
 	freezeChannelIDs []int64
 	applyCalls       int
 	rollbackCalls    int
+	finishHook       func()
+	applyContextErr  error
 }
 
 func (r *upstreamPriceAutoApplyRepository) GetConfig(context.Context) (*domain.UpstreamPriceMonitorConfig, error) {
@@ -57,6 +59,9 @@ func (r *upstreamPriceAutoApplyRepository) FinishRun(_ context.Context, run *dom
 	copy := *run
 	copy.Summary = cloneUpstreamPriceSummary(run.Summary)
 	r.finished = &copy
+	if r.finishHook != nil {
+		r.finishHook()
+	}
 	return nil
 }
 
@@ -86,7 +91,7 @@ func (r *upstreamPriceAutoApplyRepository) GetRun(context.Context, int64) (*doma
 }
 
 func (r *upstreamPriceAutoApplyRepository) ApplyRun(
-	_ context.Context,
+	ctx context.Context,
 	_ int64,
 	_ string,
 	_ []int64,
@@ -97,6 +102,7 @@ func (r *upstreamPriceAutoApplyRepository) ApplyRun(
 	_ int64,
 ) error {
 	r.applyCalls++
+	r.applyContextErr = ctx.Err()
 	if r.finished.Summary == nil {
 		r.finished.Summary = map[string]any{}
 	}
@@ -151,7 +157,7 @@ func testAutoApplyConfig() domain.UpstreamPriceMonitorConfig {
 	cfg := domain.DefaultUpstreamPriceMonitorConfig()
 	cfg.Enabled = true
 	cfg.Mode = domain.UpstreamPriceMonitorModeAutoApply
-	cfg.IntervalMinutes = 1440
+	cfg.IntervalMinutes = 360
 	cfg.ActiveProbeEnabled = true
 	cfg.AccountIDs = []int64{7}
 	cfg.ChannelIDs = []int64{3}
@@ -179,6 +185,24 @@ func TestUpstreamPriceMonitorUpdateConfigAcceptsAutoApplyAndActiveProbe(t *testi
 	require.Equal(t, domain.UpstreamPriceMonitorModeAutoApply, repo.updated.Mode)
 	require.True(t, repo.updated.ActiveProbeEnabled)
 	require.Equal(t, []string{"MiniMax-M3"}, repo.updated.DomesticModels)
+}
+
+func TestUpstreamPriceMonitorUpdateConfigAcceptsReviewMode(t *testing.T) {
+	repo := &upstreamPriceAutoApplyRepository{
+		activeProbeTestRepository: &activeProbeTestRepository{},
+		catalog: []domain.UpstreamPriceModelCatalogEntry{{
+			ModelName: "MiniMax-M3", Status: domain.UpstreamPriceModelStatusManaged,
+		}},
+	}
+	svc := NewUpstreamPriceMonitorService(repo, upstreamPriceAutoApplyAccountReader{account: testUpstreamPriceAccount()}, nil)
+	svc.SetActiveProber(&activeProbeScript{})
+	cfg := testAutoApplyConfig()
+	cfg.Mode = domain.UpstreamPriceMonitorModeReview
+
+	err := svc.UpdateConfig(context.Background(), &cfg)
+
+	require.NoError(t, err)
+	require.Equal(t, domain.UpstreamPriceMonitorModeReview, repo.updated.Mode)
 }
 
 func TestUpstreamPriceMonitorUpdateConfigRejectsActiveProbeWithoutProber(t *testing.T) {
@@ -254,6 +278,29 @@ func TestUpstreamPriceMonitorScheduledAutoApplyInvalidatesPricingCache(t *testin
 	require.Equal(t, 1, invalidator.calls)
 }
 
+func TestUpstreamPriceMonitorAutoApplyGetsIndependentContextAfterProbeCancellation(t *testing.T) {
+	cfg := testAutoApplyConfig()
+	ctx, cancel := context.WithCancel(context.Background())
+	repo := &upstreamPriceAutoApplyRepository{
+		activeProbeTestRepository: &activeProbeTestRepository{},
+		config:                    &cfg,
+		finishHook:                cancel,
+	}
+	remote := &activeProbeScript{now: time.Date(2026, 8, 31, 1, 15, 0, 0, time.UTC)}
+	svc := NewUpstreamPriceMonitorService(repo, upstreamPriceAutoApplyAccountReader{account: testUpstreamPriceAccount()}, remote)
+	svc.SetActiveProber(remote)
+
+	run, err := svc.RunOnce(ctx, UpstreamPriceRunOptions{
+		Trigger: domain.UpstreamPriceMonitorRunTriggerScheduled,
+		DryRun:  false,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, run.AppliedAt)
+	require.Equal(t, 1, repo.applyCalls)
+	require.NoError(t, repo.applyContextErr)
+}
+
 func TestUpstreamPriceMonitorApplyChecksAccountIdentityAndRollbackInvalidatesCache(t *testing.T) {
 	account := testUpstreamPriceAccount()
 	cfg := testAutoApplyConfig()
@@ -292,5 +339,53 @@ func TestUpstreamPriceMonitorApplyChecksAccountIdentityAndRollbackInvalidatesCac
 	svc = NewUpstreamPriceMonitorService(repo, upstreamPriceAutoApplyAccountReader{account: rotated}, nil)
 	_, err = svc.ApplyRun(context.Background(), 77, "snapshot")
 	require.ErrorIs(t, err, ErrUpstreamPriceSnapshotMismatch)
+	require.Equal(t, 1, repo.applyCalls)
+}
+
+func TestUpstreamPriceMonitorObserveModeRejectsManualApply(t *testing.T) {
+	account := testUpstreamPriceAccount()
+	cfg := testAutoApplyConfig()
+	cfg.Mode = domain.UpstreamPriceMonitorModeObserve
+	repo := &upstreamPriceAutoApplyRepository{
+		activeProbeTestRepository: &activeProbeTestRepository{},
+		config:                    &cfg,
+		finished: &domain.UpstreamPriceMonitorRun{
+			ID: 77, Status: domain.UpstreamPriceMonitorRunStatusCompleted, SnapshotHash: "snapshot",
+		},
+	}
+	svc := NewUpstreamPriceMonitorService(repo, upstreamPriceAutoApplyAccountReader{account: account}, nil)
+
+	_, err := svc.ApplyRun(context.Background(), 77, "snapshot")
+
+	require.ErrorIs(t, err, ErrUpstreamPriceRunNotApplicable)
+	require.Zero(t, repo.applyCalls)
+	_, err = svc.RollbackRun(context.Background(), 77, "snapshot")
+	require.ErrorIs(t, err, ErrUpstreamPriceRunNotApplicable)
+	require.Zero(t, repo.rollbackCalls)
+}
+
+func TestUpstreamPriceMonitorReviewModeAllowsManualApply(t *testing.T) {
+	account := testUpstreamPriceAccount()
+	cfg := testAutoApplyConfig()
+	cfg.Mode = domain.UpstreamPriceMonitorModeReview
+	repo := &upstreamPriceAutoApplyRepository{
+		activeProbeTestRepository: &activeProbeTestRepository{},
+		config:                    &cfg,
+		finished: &domain.UpstreamPriceMonitorRun{
+			ID: 77, Status: domain.UpstreamPriceMonitorRunStatusCompleted, SnapshotHash: "snapshot",
+			Summary: map[string]any{
+				"account_ids": []int64{7}, "channel_ids": []int64{3},
+				"display_multiplier_decimals": 3, "snapshot_max_age_minutes": 60,
+				"config_updated_at": cfg.UpdatedAt.Format(time.RFC3339Nano), "model_catalog_revision": int64(1),
+				"account_ledger_hashes":   map[string]string{"7": UpstreamPriceCredentialLedgerHash(account)},
+				"account_identity_hashes": map[string]string{"7": UpstreamPriceAccountIdentityHash(account)},
+			},
+		},
+	}
+	svc := NewUpstreamPriceMonitorService(repo, upstreamPriceAutoApplyAccountReader{account: account}, nil)
+
+	_, err := svc.ApplyRun(context.Background(), 77, "snapshot")
+
+	require.NoError(t, err)
 	require.Equal(t, 1, repo.applyCalls)
 }

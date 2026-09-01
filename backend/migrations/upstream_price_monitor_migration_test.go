@@ -72,3 +72,15 @@ func TestUpstreamPriceMonitorActiveOnlyMigrationLocksDailySafetyDefaults(t *test
 	require.Contains(t, sql, "qwen3.8-flash")
 	require.Contains(t, sql, "dimension_statuses jsonb")
 }
+
+func TestUpstreamPriceMonitorModesAndFrequencyMigrationPreservesEnabledState(t *testing.T) {
+	raw, err := os.ReadFile("244_upstream_price_monitor_modes_and_frequency.sql")
+	require.NoError(t, err)
+	sql := strings.ToLower(string(raw))
+	require.Contains(t, sql, "mode in ('observe', 'review', 'auto_apply')")
+	require.Contains(t, sql, "interval_minutes between 60 and 1440")
+	require.Contains(t, sql, "alter column interval_minutes set default 360")
+	require.Contains(t, sql, "active_probe_daily_budget_usd <= 0.4000000000")
+	require.Contains(t, sql, "where id = 1 and interval_minutes = 1440")
+	require.NotContains(t, sql, "set enabled")
+}

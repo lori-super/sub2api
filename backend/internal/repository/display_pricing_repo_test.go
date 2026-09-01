@@ -159,7 +159,7 @@ func TestDisplayPricingRepositoryOfficialPriceConflictRollsBackWholeBatch(t *tes
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestDisplayPricingRepositoryAppliesExactUpstreamPricesAndResetsFallbacksAtomically(t *testing.T) {
+func TestDisplayPricingRepositoryAppliesExactUpstreamPricesWithoutTouchingProviderConfig(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
@@ -174,13 +174,10 @@ func TestDisplayPricingRepositoryAppliesExactUpstreamPricesAndResetsFallbacksAto
 	mock.ExpectBegin()
 	mock.ExpectQuery(`SELECT id FROM display_model_prices WHERE id=\$1 AND billing_mode='token' FOR UPDATE`).
 		WithArgs(int64(8)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(8)))
-	mock.ExpectQuery(`(?s)UPDATE display_model_prices SET.*model_multiplier=NULL.*input_multiplier_override=NULL.*WHERE id=\$1`).
+	mock.ExpectQuery(`(?s)UPDATE display_model_prices SET.*display_input_per_million_override=.*WHERE id=\$1`).
 		WithArgs(int64(8), officialInput, nil, nil, nil, sellingInput, nil, sellingCacheWrite, nil,
 			service.DisplayOfficialPriceX5M5X, service.DisplayUpstreamPriceSourceURL, now).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(8)))
-	mock.ExpectExec(`(?s)UPDATE display_pricing_providers SET.*multiplier=\$2.*input_multiplier_override=NULL`).
-		WithArgs("zhipu", service.DisplayUpstreamProviderFallbackMultiplier).
-		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	changed, err := NewDisplayPricingRepository(db).(*displayPricingRepository).

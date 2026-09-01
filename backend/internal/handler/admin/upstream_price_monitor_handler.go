@@ -163,7 +163,7 @@ func (h *UpstreamPriceMonitorHandler) CreateRun(c *gin.Context) {
 		defer cancelRun()
 		run, err := h.monitor.RunOnce(runCtx, service.UpstreamPriceRunOptions{
 			Trigger: domain.UpstreamPriceMonitorRunTriggerManual,
-			DryRun:  true, // Manual collection is always observation-only; apply remains scheduler-controlled.
+			DryRun:  true, // Collection never writes inline; review mode exposes a separate step-up Apply action.
 		})
 		resultCh <- runResult{run: run, err: err}
 	}()
