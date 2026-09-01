@@ -1,6 +1,6 @@
 import { apiClient } from '../client'
 
-export type UpstreamPriceMonitorMode = 'observe' | 'auto_apply'
+export type UpstreamPriceMonitorMode = 'observe' | 'review' | 'auto_apply'
 export type UpstreamPriceMonitorRuntimeStatus =
   | 'idle'
   | 'running'
