@@ -556,7 +556,11 @@ func normalizeAndValidateDisplayModelPrice(p *DisplayModelPrice) error {
 	switch p.BillingMode {
 	case DisplayBillingModeToken:
 		p.PerRequestLTE256K, p.PerRequest256K512KOverride, p.PerRequestGT512KOverride = nil, nil, nil
-		p.ImagePrices = nil
+		// The database mode constraint requires non-image rows to persist the
+		// canonical empty JSON array. A nil slice is encoded as JSON `null`, which
+		// violates that constraint and used to turn every token-price edit into a
+		// generic HTTP 500.
+		p.ImagePrices = []DisplayImagePrice{}
 	case DisplayBillingModePerRequest:
 		if p.PerRequestLTE256K == nil {
 			return ErrDisplayPriceInvalid
@@ -570,7 +574,7 @@ func normalizeAndValidateDisplayModelPrice(p *DisplayModelPrice) error {
 		p.OfficialPriceSource = DisplayOfficialPriceManual
 		p.OfficialPriceSourceURL = ""
 		p.OfficialPriceSyncedAt = nil
-		p.ImagePrices = nil
+		p.ImagePrices = []DisplayImagePrice{}
 	case DisplayBillingModeImage:
 		if len(p.ImagePrices) == 0 {
 			return ErrDisplayPriceInvalid
