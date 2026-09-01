@@ -121,17 +121,35 @@ func (r *UpstreamPriceMonitorRunner) runPerRequestIfDue() {
 	r.perRequestMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(r.ctx, upstreamPerRequestPriceSyncTimeout)
-	result, err := r.monitor.SyncPerRequestPrices(ctx)
+	result, perRequestErr := r.monitor.SyncPerRequestPrices(ctx)
 	cancel()
+
+	var tokenDisplayErr error
+	var tokenDisplayResult *DisplayUpstreamTokenPriceSyncResult
+	if tokenFetcher, ok := r.monitor.pricePage.(UpstreamTokenPricePageFetcher); ok && r.monitor.displayPricing != nil {
+		tokenCtx, tokenCancel := context.WithTimeout(r.ctx, upstreamPerRequestPriceSyncTimeout)
+		tokenDisplayResult, tokenDisplayErr = r.monitor.displayPricing.SyncUpstreamTokenDisplayPrices(tokenCtx, tokenFetcher)
+		tokenCancel()
+	}
 	nextInterval := upstreamPerRequestPriceSyncInterval
-	if err != nil {
+	if perRequestErr != nil || tokenDisplayErr != nil {
 		nextInterval = upstreamPerRequestPriceRetryInterval
-		slog.Warn("upstream_per_request_price_sync_failed", "error", err)
+		if perRequestErr != nil {
+			slog.Warn("upstream_per_request_price_sync_failed", "error", perRequestErr)
+		}
+		if tokenDisplayErr != nil {
+			slog.Warn("upstream_token_display_price_sync_failed", "error", tokenDisplayErr)
+		}
 	} else if result != nil && result.ChangedModels > 0 {
 		slog.Info("upstream_per_request_price_sync_applied",
 			"models", result.Models,
 			"changed_models", result.ChangedModels,
 			"changed_channel_rows", result.ChangedChannelRows)
+	}
+	if tokenDisplayResult != nil && tokenDisplayResult.ChangedModels > 0 {
+		slog.Info("upstream_token_display_price_sync_applied",
+			"models", tokenDisplayResult.UpdatedModels,
+			"changed_models", tokenDisplayResult.ChangedModels)
 	}
 	r.perRequestMu.Lock()
 	r.perRequestNextRun = now().Add(nextInterval)

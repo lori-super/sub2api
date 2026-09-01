@@ -12,10 +12,20 @@ import (
 )
 
 type perRequestPricePageStub struct {
-	mu     sync.Mutex
-	prices map[string]domain.UpstreamPriceVector
-	err    error
-	calls  int
+	mu          sync.Mutex
+	prices      map[string]domain.UpstreamPriceVector
+	err         error
+	calls       int
+	tokenPrices map[string]UpstreamTokenDisplayPrice
+	tokenErr    error
+	tokenCalls  int
+}
+
+func (f *perRequestPricePageStub) FetchTokenPrices(context.Context) (map[string]UpstreamTokenDisplayPrice, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tokenCalls++
+	return f.tokenPrices, f.tokenErr
 }
 
 func (f *perRequestPricePageStub) FetchPerRequestPrices(context.Context) (map[string]domain.UpstreamPriceVector, error) {
@@ -29,6 +39,12 @@ func (f *perRequestPricePageStub) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+func (f *perRequestPricePageStub) tokenCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tokenCalls
 }
 
 type perRequestPriceSyncRepoStub struct {
@@ -185,4 +201,45 @@ func TestUpstreamPriceMonitorRunnerRetriesPerRequestSyncAfterOneHour(t *testing.
 	clock = clock.Add(time.Minute)
 	runner.runPerRequestIfDue()
 	require.Equal(t, 2, fetcher.callCount())
+}
+
+func TestUpstreamPriceMonitorRunnerSchedulesTokenDisplaySyncWithPerRequestClock(t *testing.T) {
+	first, official, selling := 0.01, 1.6, 0.16
+	cfg := domain.DefaultUpstreamPriceMonitorConfig()
+	cfg.Enabled = false
+	cfg.ChannelIDs = []int64{2}
+	cfg.PerRequestModels = []string{"model-a"}
+	monitorRepo := &perRequestPriceSyncRepoStub{
+		activeProbeTestRepository: &activeProbeTestRepository{}, cfg: cfg,
+		result: &UpstreamPerRequestPriceSyncResult{Models: 1},
+	}
+	fetcher := &perRequestPricePageStub{
+		prices: map[string]domain.UpstreamPriceVector{"model-a": {PerRequestLTE256K: &first}},
+		tokenPrices: map[string]UpstreamTokenDisplayPrice{
+			"deepseek-a": {OfficialInput: &official, SellingInput: &selling},
+		},
+	}
+	displayRepo := &upstreamDisplaySyncRepoStub{stubDisplayPricingRepo: stubDisplayPricingRepo{models: []DisplayModelPrice{{
+		ID: 1, Platform: "openai", ModelName: "deepseek-a", Provider: "deepseek",
+		BillingMode: DisplayBillingModeToken, Currency: DisplayCurrencyCNY, Enabled: true,
+	}}}}
+	svc := NewUpstreamPriceMonitorService(monitorRepo, nil, nil)
+	svc.SetPricePageFetcher(fetcher)
+	svc.SetDisplayPricingService(NewDisplayPricingService(displayRepo))
+	runner := NewUpstreamPriceMonitorRunner(svc)
+	defer runner.cancel()
+	clock := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	runner.now = func() time.Time { return clock }
+
+	runner.runIfDue()
+	require.Equal(t, 1, fetcher.callCount())
+	require.Equal(t, 1, fetcher.tokenCallCount())
+	require.Len(t, displayRepo.updates, 1)
+	require.InDelta(t, 0.192, *displayRepo.updates[0].DisplayInput, 1e-12)
+	clock = clock.Add(23*time.Hour + 59*time.Minute)
+	runner.runIfDue()
+	require.Equal(t, 1, fetcher.tokenCallCount())
+	clock = clock.Add(time.Minute)
+	runner.runIfDue()
+	require.Equal(t, 2, fetcher.tokenCallCount())
 }

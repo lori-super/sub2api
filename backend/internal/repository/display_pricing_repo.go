@@ -34,7 +34,9 @@ func (r *displayPricingRepository) UpdateSettings(ctx context.Context, settings 
 }
 
 func (r *displayPricingRepository) ListProviders(ctx context.Context) ([]service.DisplayPricingProvider, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT provider, display_name, provider_note, per_request_note, image_note, currency, multiplier, logo_key, logo_url, sort_order, updated_at FROM display_pricing_providers ORDER BY sort_order, display_name`)
+	rows, err := r.db.QueryContext(ctx, `SELECT provider, display_name, provider_note, per_request_note, image_note, currency, multiplier,
+		input_multiplier_override, output_multiplier_override, cache_write_multiplier_override, cache_read_multiplier_override,
+		logo_key, logo_url, sort_order, updated_at FROM display_pricing_providers ORDER BY sort_order, display_name`)
 	if err != nil {
 		return nil, fmt.Errorf("list display pricing providers: %w", err)
 	}
@@ -42,11 +44,17 @@ func (r *displayPricingRepository) ListProviders(ctx context.Context) ([]service
 	out := make([]service.DisplayPricingProvider, 0)
 	for rows.Next() {
 		var p service.DisplayPricingProvider
-		var multiplier sql.NullFloat64
-		if err := rows.Scan(&p.Provider, &p.DisplayName, &p.ProviderNote, &p.PerRequestNote, &p.ImageNote, &p.Currency, &multiplier, &p.LogoKey, &p.LogoURL, &p.SortOrder, &p.UpdatedAt); err != nil {
+		var multiplier, inputMultiplier, outputMultiplier, cacheWriteMultiplier, cacheReadMultiplier sql.NullFloat64
+		if err := rows.Scan(&p.Provider, &p.DisplayName, &p.ProviderNote, &p.PerRequestNote, &p.ImageNote, &p.Currency, &multiplier,
+			&inputMultiplier, &outputMultiplier, &cacheWriteMultiplier, &cacheReadMultiplier,
+			&p.LogoKey, &p.LogoURL, &p.SortOrder, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		p.Multiplier = nullFloatPtr(multiplier)
+		p.InputMultiplierOverride = nullFloatPtr(inputMultiplier)
+		p.OutputMultiplierOverride = nullFloatPtr(outputMultiplier)
+		p.CacheWriteMultiplierOverride = nullFloatPtr(cacheWriteMultiplier)
+		p.CacheReadMultiplierOverride = nullFloatPtr(cacheReadMultiplier)
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -57,10 +65,14 @@ func (r *displayPricingRepository) ListProviders(ctx context.Context) ([]service
 
 func (r *displayPricingRepository) CreateProvider(ctx context.Context, p *service.DisplayPricingProvider) error {
 	err := r.db.QueryRowContext(ctx, `
-		INSERT INTO display_pricing_providers (provider, display_name, provider_note, per_request_note, image_note, currency, multiplier, logo_key, logo_url, sort_order, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+		INSERT INTO display_pricing_providers (provider, display_name, provider_note, per_request_note, image_note, currency, multiplier,
+			input_multiplier_override, output_multiplier_override, cache_write_multiplier_override, cache_read_multiplier_override,
+			logo_key, logo_url, sort_order, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
 		ON CONFLICT (provider) DO NOTHING
-		RETURNING updated_at`, p.Provider, p.DisplayName, p.ProviderNote, p.PerRequestNote, p.ImageNote, p.Currency, p.Multiplier, p.LogoKey, p.LogoURL, p.SortOrder).Scan(&p.UpdatedAt)
+		RETURNING updated_at`, p.Provider, p.DisplayName, p.ProviderNote, p.PerRequestNote, p.ImageNote, p.Currency, p.Multiplier,
+		p.InputMultiplierOverride, p.OutputMultiplierOverride, p.CacheWriteMultiplierOverride, p.CacheReadMultiplierOverride,
+		p.LogoKey, p.LogoURL, p.SortOrder).Scan(&p.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return service.ErrDisplayProviderExists
 	}
@@ -71,14 +83,18 @@ func (r *displayPricingRepository) UpdateProvider(ctx context.Context, p *servic
 	err := r.db.QueryRowContext(ctx, `
 		WITH updated_provider AS (
 			UPDATE display_pricing_providers SET display_name=$2, provider_note=$3, per_request_note=$4, image_note=$5,
-				currency=$6, multiplier=$7, logo_key=$8, logo_url=$9, sort_order=$10, updated_at=NOW()
+				currency=$6, multiplier=$7, input_multiplier_override=$8, output_multiplier_override=$9,
+				cache_write_multiplier_override=$10, cache_read_multiplier_override=$11,
+				logo_key=$12, logo_url=$13, sort_order=$14, updated_at=NOW()
 			WHERE provider=$1 RETURNING updated_at
 		), updated_models AS (
 			UPDATE display_model_prices SET currency=$6, updated_at=NOW()
 			WHERE provider=$1 AND currency<>$6 AND EXISTS (SELECT 1 FROM updated_provider)
 		)
 		SELECT updated_at FROM updated_provider`,
-		p.Provider, p.DisplayName, p.ProviderNote, p.PerRequestNote, p.ImageNote, p.Currency, p.Multiplier, p.LogoKey, p.LogoURL, p.SortOrder).Scan(&p.UpdatedAt)
+		p.Provider, p.DisplayName, p.ProviderNote, p.PerRequestNote, p.ImageNote, p.Currency, p.Multiplier,
+		p.InputMultiplierOverride, p.OutputMultiplierOverride, p.CacheWriteMultiplierOverride, p.CacheReadMultiplierOverride,
+		p.LogoKey, p.LogoURL, p.SortOrder).Scan(&p.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return service.ErrDisplayProviderNotFound
 	}
@@ -118,7 +134,10 @@ const displayModelSelect = `SELECT id, platform, model_name, provider, billing_m
 	model_note,
 	official_input_per_million, official_output_per_million, official_cache_write_per_million, official_cache_read_per_million,
 	official_price_source, official_price_source_url, official_price_synced_at,
-	model_multiplier, per_request_lte_256k, per_request_256k_512k_override, per_request_gt_512k_override,
+	model_multiplier, input_multiplier_override, output_multiplier_override, cache_write_multiplier_override, cache_read_multiplier_override,
+	display_input_per_million_override, display_output_per_million_override,
+	display_cache_write_per_million_override, display_cache_read_per_million_override,
+	per_request_lte_256k, per_request_256k_512k_override, per_request_gt_512k_override,
 	image_prices, created_at, updated_at FROM display_model_prices`
 
 func (r *displayPricingRepository) ListModels(ctx context.Context) ([]service.DisplayModelPrice, error) {
@@ -162,9 +181,12 @@ func (r *displayPricingRepository) UpsertModel(ctx context.Context, p *service.D
 			platform, model_name, provider, billing_mode, currency, enabled, sort_order, model_note,
 			official_input_per_million, official_output_per_million, official_cache_write_per_million, official_cache_read_per_million,
 			official_price_source, official_price_source_url, official_price_synced_at,
-			model_multiplier, per_request_lte_256k, per_request_256k_512k_override, per_request_gt_512k_override, image_prices,
+			model_multiplier, input_multiplier_override, output_multiplier_override, cache_write_multiplier_override, cache_read_multiplier_override,
+			display_input_per_million_override, display_output_per_million_override,
+			display_cache_write_per_million_override, display_cache_read_per_million_override,
+			per_request_lte_256k, per_request_256k_512k_override, per_request_gt_512k_override, image_prices,
 			created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NOW(),NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,NOW(),NOW())
 		ON CONFLICT (platform, model_name, billing_mode) DO UPDATE SET
 			provider=EXCLUDED.provider, currency=EXCLUDED.currency, enabled=EXCLUDED.enabled, sort_order=EXCLUDED.sort_order,
 			model_note=EXCLUDED.model_note,
@@ -175,7 +197,16 @@ func (r *displayPricingRepository) UpsertModel(ctx context.Context, p *service.D
 			official_price_source=EXCLUDED.official_price_source,
 			official_price_source_url=EXCLUDED.official_price_source_url,
 			official_price_synced_at=EXCLUDED.official_price_synced_at,
-			model_multiplier=EXCLUDED.model_multiplier, per_request_lte_256k=EXCLUDED.per_request_lte_256k,
+			model_multiplier=EXCLUDED.model_multiplier,
+			input_multiplier_override=EXCLUDED.input_multiplier_override,
+			output_multiplier_override=EXCLUDED.output_multiplier_override,
+			cache_write_multiplier_override=EXCLUDED.cache_write_multiplier_override,
+			cache_read_multiplier_override=EXCLUDED.cache_read_multiplier_override,
+			display_input_per_million_override=EXCLUDED.display_input_per_million_override,
+			display_output_per_million_override=EXCLUDED.display_output_per_million_override,
+			display_cache_write_per_million_override=EXCLUDED.display_cache_write_per_million_override,
+			display_cache_read_per_million_override=EXCLUDED.display_cache_read_per_million_override,
+			per_request_lte_256k=EXCLUDED.per_request_lte_256k,
 			per_request_256k_512k_override=EXCLUDED.per_request_256k_512k_override,
 			per_request_gt_512k_override=EXCLUDED.per_request_gt_512k_override,
 			image_prices=EXCLUDED.image_prices, updated_at=NOW()
@@ -193,9 +224,14 @@ func (r *displayPricingRepository) UpdateModel(ctx context.Context, p *service.D
 		platform=$1, model_name=$2, provider=$3, billing_mode=$4, currency=$5, enabled=$6, sort_order=$7, model_note=$8,
 		official_input_per_million=$9, official_output_per_million=$10, official_cache_write_per_million=$11,
 		official_cache_read_per_million=$12, official_price_source=$13, official_price_source_url=$14,
-		official_price_synced_at=$15, model_multiplier=$16, per_request_lte_256k=$17,
-		per_request_256k_512k_override=$18, per_request_gt_512k_override=$19, image_prices=$20, updated_at=NOW()
-		WHERE id=$21 RETURNING created_at, updated_at`, args...).Scan(&p.CreatedAt, &p.UpdatedAt)
+		official_price_synced_at=$15, model_multiplier=$16,
+		input_multiplier_override=$17, output_multiplier_override=$18,
+		cache_write_multiplier_override=$19, cache_read_multiplier_override=$20,
+		display_input_per_million_override=$21, display_output_per_million_override=$22,
+		display_cache_write_per_million_override=$23, display_cache_read_per_million_override=$24,
+		per_request_lte_256k=$25, per_request_256k_512k_override=$26,
+		per_request_gt_512k_override=$27, image_prices=$28, updated_at=NOW()
+		WHERE id=$29 RETURNING created_at, updated_at`, args...).Scan(&p.CreatedAt, &p.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return service.ErrDisplayPriceNotFound
 	}
@@ -258,6 +294,73 @@ func (r *displayPricingRepository) ApplyOfficialPriceUpdates(ctx context.Context
 	return nil
 }
 
+// ApplyUpstreamTokenDisplayPriceUpdates atomically updates presentation data
+// only. The SQL is deliberately anchored to display_model_prices and token
+// rows so an upstream display sync cannot alter real channel/user billing.
+func (r *displayPricingRepository) ApplyUpstreamTokenDisplayPriceUpdates(ctx context.Context, updates []service.DisplayUpstreamTokenPriceUpdate) (int, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	changed := 0
+	providers := make(map[string]struct{})
+	for i := range updates {
+		update := updates[i]
+		var lockedID int64
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM display_model_prices WHERE id=$1 AND billing_mode='token' FOR UPDATE`, update.ModelID).Scan(&lockedID); err != nil {
+			if err == sql.ErrNoRows {
+				return 0, service.ErrDisplayPriceNotFound
+			}
+			return 0, err
+		}
+		var id int64
+		err := tx.QueryRowContext(ctx, `UPDATE display_model_prices SET
+			official_input_per_million=$2, official_output_per_million=$3,
+			official_cache_write_per_million=$4, official_cache_read_per_million=$5,
+			display_input_per_million_override=$6, display_output_per_million_override=$7,
+			display_cache_write_per_million_override=$8, display_cache_read_per_million_override=$9,
+			model_multiplier=NULL, input_multiplier_override=NULL, output_multiplier_override=NULL,
+			cache_write_multiplier_override=NULL, cache_read_multiplier_override=NULL,
+			official_price_source=$10, official_price_source_url=$11, official_price_synced_at=$12,
+			updated_at=NOW()
+			WHERE id=$1 AND billing_mode='token' AND (
+				official_input_per_million IS DISTINCT FROM $2 OR official_output_per_million IS DISTINCT FROM $3 OR
+				official_cache_write_per_million IS DISTINCT FROM $4 OR official_cache_read_per_million IS DISTINCT FROM $5 OR
+				display_input_per_million_override IS DISTINCT FROM $6 OR display_output_per_million_override IS DISTINCT FROM $7 OR
+				display_cache_write_per_million_override IS DISTINCT FROM $8 OR display_cache_read_per_million_override IS DISTINCT FROM $9 OR
+				model_multiplier IS NOT NULL OR input_multiplier_override IS NOT NULL OR output_multiplier_override IS NOT NULL OR
+				cache_write_multiplier_override IS NOT NULL OR cache_read_multiplier_override IS NOT NULL OR
+				official_price_source IS DISTINCT FROM $10 OR official_price_source_url IS DISTINCT FROM $11
+			)
+			RETURNING id`, update.ModelID,
+			update.OfficialInput, update.OfficialOutput, update.OfficialCacheWrite, update.OfficialCacheRead,
+			update.DisplayInput, update.DisplayOutput, update.DisplayCacheWrite, update.DisplayCacheRead,
+			update.OfficialPriceSource, update.OfficialPriceSourceURL, update.SyncedAt).Scan(&id)
+		if err == nil {
+			changed++
+		} else if err != sql.ErrNoRows {
+			return 0, err
+		}
+		providers[update.Provider] = struct{}{}
+	}
+	for provider := range providers {
+		if _, err := tx.ExecContext(ctx, `UPDATE display_pricing_providers SET
+			multiplier=$2, input_multiplier_override=NULL, output_multiplier_override=NULL,
+			cache_write_multiplier_override=NULL, cache_read_multiplier_override=NULL, updated_at=NOW()
+			WHERE provider=$1 AND (
+				multiplier IS DISTINCT FROM $2 OR input_multiplier_override IS NOT NULL OR output_multiplier_override IS NOT NULL OR
+				cache_write_multiplier_override IS NOT NULL OR cache_read_multiplier_override IS NOT NULL
+			)`, provider, service.DisplayUpstreamPriceMarkup); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return changed, nil
+}
+
 func decimalSQLArg(value *decimal.Decimal) any {
 	if value == nil {
 		return nil
@@ -270,7 +373,11 @@ func displayModelArgs(p *service.DisplayModelPrice, imageJSON []byte) []any {
 		p.ModelNote,
 		p.OfficialInputPerMillion, p.OfficialOutputPerMillion, p.OfficialCacheWritePerMillion, p.OfficialCacheReadPerMillion,
 		p.OfficialPriceSource, p.OfficialPriceSourceURL, p.OfficialPriceSyncedAt,
-		p.ModelMultiplier, p.PerRequestLTE256K, p.PerRequest256K512KOverride, p.PerRequestGT512KOverride, imageJSON}
+		p.ModelMultiplier, p.InputMultiplierOverride, p.OutputMultiplierOverride,
+		p.CacheWriteMultiplierOverride, p.CacheReadMultiplierOverride,
+		p.DisplayInputPerMillionOverride, p.DisplayOutputPerMillionOverride,
+		p.DisplayCacheWritePerMillionOverride, p.DisplayCacheReadPerMillionOverride,
+		p.PerRequestLTE256K, p.PerRequest256K512KOverride, p.PerRequestGT512KOverride, imageJSON}
 }
 
 type displayPriceRowScanner interface{ Scan(dest ...any) error }
@@ -278,13 +385,17 @@ type displayPriceRowScanner interface{ Scan(dest ...any) error }
 func scanDisplayModel(row displayPriceRowScanner) (*service.DisplayModelPrice, error) {
 	var p service.DisplayModelPrice
 	var input, output, cacheWrite, cacheRead, multiplier sql.NullFloat64
+	var inputMultiplier, outputMultiplier, cacheWriteMultiplier, cacheReadMultiplier sql.NullFloat64
+	var displayInput, displayOutput, displayCacheWrite, displayCacheRead sql.NullFloat64
 	var base, mid, high sql.NullFloat64
 	var syncedAt sql.NullTime
 	var imageJSON []byte
 	err := row.Scan(&p.ID, &p.Platform, &p.ModelName, &p.Provider, &p.BillingMode, &p.Currency, &p.Enabled, &p.SortOrder,
 		&p.ModelNote,
 		&input, &output, &cacheWrite, &cacheRead, &p.OfficialPriceSource, &p.OfficialPriceSourceURL, &syncedAt,
-		&multiplier, &base, &mid, &high, &imageJSON, &p.CreatedAt, &p.UpdatedAt)
+		&multiplier, &inputMultiplier, &outputMultiplier, &cacheWriteMultiplier, &cacheReadMultiplier,
+		&displayInput, &displayOutput, &displayCacheWrite, &displayCacheRead,
+		&base, &mid, &high, &imageJSON, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +408,14 @@ func scanDisplayModel(row displayPriceRowScanner) (*service.DisplayModelPrice, e
 		p.OfficialPriceSyncedAt = &value
 	}
 	p.ModelMultiplier = nullFloatPtr(multiplier)
+	p.InputMultiplierOverride = nullFloatPtr(inputMultiplier)
+	p.OutputMultiplierOverride = nullFloatPtr(outputMultiplier)
+	p.CacheWriteMultiplierOverride = nullFloatPtr(cacheWriteMultiplier)
+	p.CacheReadMultiplierOverride = nullFloatPtr(cacheReadMultiplier)
+	p.DisplayInputPerMillionOverride = nullFloatPtr(displayInput)
+	p.DisplayOutputPerMillionOverride = nullFloatPtr(displayOutput)
+	p.DisplayCacheWritePerMillionOverride = nullFloatPtr(displayCacheWrite)
+	p.DisplayCacheReadPerMillionOverride = nullFloatPtr(displayCacheRead)
 	p.PerRequestLTE256K = nullFloatPtr(base)
 	p.PerRequest256K512KOverride = nullFloatPtr(mid)
 	p.PerRequestGT512KOverride = nullFloatPtr(high)

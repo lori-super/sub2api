@@ -435,3 +435,50 @@ func TestDisplayPricingNotesAreTrimmedAndLengthLimited(t *testing.T) {
 		require.ErrorIs(t, err, ErrDisplayProviderInvalid)
 	}
 }
+
+func TestDisplayPricingTokenDimensionPriorityAndExactPriceOverride(t *testing.T) {
+	providerRate, providerCacheRead := 0.12, 0.36
+	modelRate, modelInput := 0.2, 0.25
+	input, output, cacheRead := 1.0, 2.0, 0.1
+	exactInput, exactCacheWrite := 0.3, 0.2352
+	repo := &stubDisplayPricingRepo{
+		settings: DisplayPricingSettings{GlobalMultiplier: 1},
+		providers: []DisplayPricingProvider{{
+			Provider: "deepseek", DisplayName: "DeepSeek", Currency: "CNY", Multiplier: &providerRate,
+			CacheReadMultiplierOverride: &providerCacheRead,
+		}},
+		models: []DisplayModelPrice{
+			{ID: 1, Platform: "openai", ModelName: "inherited", Provider: "deepseek", BillingMode: DisplayBillingModeToken, Currency: "CNY", Enabled: true, OfficialInputPerMillion: &input, OfficialOutputPerMillion: &output, OfficialCacheReadPerMillion: &cacheRead},
+			{ID: 2, Platform: "openai", ModelName: "model-specific", Provider: "deepseek", BillingMode: DisplayBillingModeToken, Currency: "CNY", Enabled: true, OfficialInputPerMillion: &input, OfficialOutputPerMillion: &output, OfficialCacheReadPerMillion: &cacheRead, ModelMultiplier: &modelRate, InputMultiplierOverride: &modelInput},
+			{ID: 3, Platform: "openai", ModelName: "exact", Provider: "deepseek", BillingMode: DisplayBillingModeToken, Currency: "CNY", Enabled: true, OfficialInputPerMillion: &input, DisplayInputPerMillionOverride: &exactInput, DisplayCacheWritePerMillionOverride: &exactCacheWrite},
+		},
+	}
+	groups := []PlazaGroup{{Models: []PlazaModel{
+		{Name: "inherited", Platform: "openai", Pricing: &ChannelModelPricing{BillingMode: BillingMode(DisplayBillingModeToken)}},
+		{Name: "model-specific", Platform: "openai", Pricing: &ChannelModelPricing{BillingMode: BillingMode(DisplayBillingModeToken)}},
+		{Name: "exact", Platform: "openai", Pricing: &ChannelModelPricing{BillingMode: BillingMode(DisplayBillingModeToken)}},
+	}}}
+	catalog, err := NewDisplayPricingService(repo).BuildCatalog(context.Background(), groups)
+	require.NoError(t, err)
+	require.Len(t, catalog.Providers, 1)
+	byName := make(map[string]DisplayCatalogModel)
+	for _, model := range catalog.Providers[0].Models {
+		byName[model.ModelName] = model
+	}
+
+	inherited := byName["inherited"]
+	require.InDelta(t, 0.12, inherited.EffectiveMultipliers.InputPerMillion, 1e-12)
+	require.InDelta(t, 0.36, inherited.EffectiveMultipliers.CacheReadPerMillion, 1e-12)
+	require.InDelta(t, 0.036, *inherited.DisplayPrices.CacheReadPerMillion, 1e-12)
+	require.Nil(t, inherited.EffectiveMultiplier, "a single legacy multiplier must be omitted for mixed dimensions")
+
+	specific := byName["model-specific"]
+	require.InDelta(t, 0.25, specific.EffectiveMultipliers.InputPerMillion, 1e-12)
+	require.InDelta(t, 0.2, specific.EffectiveMultipliers.OutputPerMillion, 1e-12)
+	require.InDelta(t, 0.2, specific.EffectiveMultipliers.CacheReadPerMillion, 1e-12, "model unified multiplier outranks provider dimension override")
+
+	exact := byName["exact"]
+	require.InDelta(t, 0.3, *exact.DisplayPrices.InputPerMillion, 1e-12)
+	require.InDelta(t, 0.3, exact.EffectiveMultipliers.InputPerMillion, 1e-12, "effective ratio reflects exact override when official exists")
+	require.InDelta(t, 0.2352, *exact.DisplayPrices.CacheWritePerMillion, 1e-12, "exact override works even without official price")
+}

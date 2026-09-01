@@ -174,6 +174,7 @@ func registerDisplayPricingRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		pricing.GET("/discovered-models", h.Admin.DisplayPricing.ListDiscoveredModels)
 		pricing.POST("/official-sync/preview", h.Admin.DisplayPricing.PreviewOfficialPrices)
 		pricing.POST("/official-sync/apply", h.Admin.DisplayPricing.ApplyOfficialPrices)
+		pricing.POST("/upstream-token-sync", h.Admin.DisplayPricing.SyncUpstreamTokenDisplayPrices)
 	}
 }
 
