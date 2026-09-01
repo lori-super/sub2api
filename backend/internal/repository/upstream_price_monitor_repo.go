@@ -316,8 +316,17 @@ func (r *upstreamPriceMonitorRepository) GetRuntime(ctx context.Context) (*domai
 			}
 		}
 		runtime.LastError = lastError
-		if cfg.Enabled && lastStatus != string(domain.UpstreamPriceMonitorRunStatusRunning) {
-			next := lastAt.Time.Add(time.Duration(cfg.IntervalMinutes) * time.Minute)
+	}
+	// Manual probes are diagnostic and must never postpone the recurring
+	// schedule. Base the next due time only on the latest scheduled run.
+	if cfg.Enabled {
+		var scheduledAt sql.NullTime
+		if err := r.db.QueryRowContext(ctx, `SELECT started_at FROM upstream_price_monitor_runs
+			WHERE trigger='scheduled' ORDER BY started_at DESC,id DESC LIMIT 1`).Scan(&scheduledAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		if scheduledAt.Valid {
+			next := scheduledAt.Time.Add(time.Duration(cfg.IntervalMinutes) * time.Minute)
 			runtime.NextRunAt = &next
 		}
 	}
@@ -766,8 +775,16 @@ func (r *upstreamPriceMonitorRepository) enrichUpstreamPriceEvidenceBatch(
 	}
 	displays := make(map[string]displayInfo)
 	displayRows, err := queryer.QueryContext(ctx, `SELECT LOWER(d.model_name),d.billing_mode,
-		COALESCE(d.model_multiplier,s.global_multiplier*COALESCE(p.multiplier,1))::float8,
+		COALESCE(d.model_multiplier,p.multiplier,s.global_multiplier)::float8,
 		d.official_input_per_million::text,d.official_output_per_million::text,
+		COALESCE(d.display_input_per_million_override,d.official_input_per_million*
+			COALESCE(d.input_multiplier_override,d.model_multiplier,p.input_multiplier_override,p.multiplier,s.global_multiplier))::float8,
+		COALESCE(d.display_output_per_million_override,d.official_output_per_million*
+			COALESCE(d.output_multiplier_override,d.model_multiplier,p.output_multiplier_override,p.multiplier,s.global_multiplier))::float8,
+		COALESCE(d.display_cache_write_per_million_override,d.official_cache_write_per_million*
+			COALESCE(d.cache_write_multiplier_override,d.model_multiplier,p.cache_write_multiplier_override,p.multiplier,s.global_multiplier))::float8,
+		COALESCE(d.display_cache_read_per_million_override,d.official_cache_read_per_million*
+			COALESCE(d.cache_read_multiplier_override,d.model_multiplier,p.cache_read_multiplier_override,p.multiplier,s.global_multiplier))::float8,
 		d.per_request_lte_256k::float8,
 		(d.per_request_lte_256k*1.5)::float8,
 		(d.per_request_lte_256k*2)::float8
@@ -780,15 +797,18 @@ func (r *upstreamPriceMonitorRepository) enrichUpstreamPriceEvidenceBatch(
 	}
 	for displayRows.Next() {
 		var model, billingMode string
-		var multiplier, low, middle, high sql.NullFloat64
+		var multiplier, displayInput, displayOutput, displayCacheWrite, displayCacheRead sql.NullFloat64
+		var low, middle, high sql.NullFloat64
 		var info displayInfo
 		if err := displayRows.Scan(&model, &billingMode, &multiplier, &info.input, &info.output,
-			&low, &middle, &high); err != nil {
+			&displayInput, &displayOutput, &displayCacheWrite, &displayCacheRead, &low, &middle, &high); err != nil {
 			_ = displayRows.Close()
 			return err
 		}
 		info.current = nullFloat64Ptr(multiplier)
 		info.prices = domain.UpstreamPriceVector{
+			InputPerMillion: nullFloat64Ptr(displayInput), OutputPerMillion: nullFloat64Ptr(displayOutput),
+			CacheWritePerMillion: nullFloat64Ptr(displayCacheWrite), CacheReadPerMillion: nullFloat64Ptr(displayCacheRead),
 			PerRequestLTE256K: nullFloat64Ptr(low), PerRequest256K512K: nullFloat64Ptr(middle),
 			PerRequestGT512K: nullFloat64Ptr(high),
 		}
@@ -830,6 +850,7 @@ func (r *upstreamPriceMonitorRepository) enrichUpstreamPriceEvidenceBatch(
 			evidence[i].DisplayPricesCurrent = info.prices
 			continue
 		}
+		evidence[i].DisplayPricesCurrent = info.prices
 		evidence[i].DisplayMultiplierCurrent = info.current
 		multiplier, representable, err := calculateDisplayMultiplier(upstreamPriceApplyEvidence{
 			Model: evidence[i].ModelName, Suggested: evidence[i].SuggestedPrices, BillingMode: evidence[i].BillingMode,

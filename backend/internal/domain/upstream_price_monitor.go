@@ -3,13 +3,14 @@ package domain
 import "time"
 
 // UpstreamPriceMonitorMode controls whether a completed reconciliation is
-// presentation-only or may be handed to the pricing applier. The monitor is
-// seeded in observe mode and the service never treats enabled as permission to
-// mutate prices.
+// observation-only, waits for administrator review, or is applied
+// automatically. Enabled only controls scheduling and never broadens the
+// selected mode's write authority.
 type UpstreamPriceMonitorMode string
 
 const (
 	UpstreamPriceMonitorModeObserve   UpstreamPriceMonitorMode = "observe"
+	UpstreamPriceMonitorModeReview    UpstreamPriceMonitorMode = "review"
 	UpstreamPriceMonitorModeAutoApply UpstreamPriceMonitorMode = "auto_apply"
 )
 
@@ -131,7 +132,7 @@ func DefaultUpstreamPriceMonitorConfig() UpstreamPriceMonitorConfig {
 	return UpstreamPriceMonitorConfig{
 		Enabled:                    false,
 		Mode:                       UpstreamPriceMonitorModeObserve,
-		IntervalMinutes:            1440,
+		IntervalMinutes:            360,
 		Markup:                     1.20,
 		DisplayMultiplierDecimals:  3,
 		DomesticModels:             append([]string(nil), DefaultX5M5XDomesticModels...),
@@ -142,7 +143,7 @@ func DefaultUpstreamPriceMonitorConfig() UpstreamPriceMonitorConfig {
 		ActiveProbeMaxRequests:     7,
 		ActiveProbeMaxModels:       19,
 		ActiveProbeRunBudgetUSD:    0.15,
-		ActiveProbeDailyBudgetUSD:  0.20,
+		ActiveProbeDailyBudgetUSD:  0.40,
 	}
 }
 

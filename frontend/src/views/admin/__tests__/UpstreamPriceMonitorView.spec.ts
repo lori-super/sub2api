@@ -165,16 +165,17 @@ describe('UpstreamPriceMonitorView', () => {
     await flushPromises()
 
     expect(wrapper.get('[data-testid="tab-overview"]').exists()).toBe(true)
-    expect(wrapper.get('[data-testid="tab-config"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="tab-history"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="tab-config"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="config-panel"]').element.tagName).toBe('DETAILS')
     expect(wrapper.text()).toContain('deepseek-v4-flash-0731')
-    expect(wrapper.text()).toContain('admin.upstreamPriceMonitor.source.active_probe')
     expect(wrapper.text()).toContain('$0.18')
+    expect(wrapper.text()).toContain('$0.16')
     expect(wrapper.text()).toContain('$0.192')
-    expect(wrapper.get('[data-testid="current-run-cost"]').text()).toBe('$0.03')
     expect(wrapper.get('[data-testid="today-probe-cost"]').text()).toBe('$0.07')
-    expect(wrapper.get('[data-testid="dimension-status-deepseek-v4-flash-0731-input"]').text()).toContain('dimension.observed')
-    expect(wrapper.get('[data-testid="dimension-status-deepseek-v4-flash-0731-cache_write"]').text()).toContain('dimension.unobserved')
+    expect(wrapper.text()).toContain('admin.upstreamPriceMonitor.overview.currentPrices')
+    expect(wrapper.text()).toContain('admin.upstreamPriceMonitor.overview.measuredPrices')
+    expect(wrapper.text()).toContain('admin.upstreamPriceMonitor.overview.targetPrices')
   })
 
   it('creates an explicit dry run and never applies it implicitly', async () => {
@@ -190,6 +191,7 @@ describe('UpstreamPriceMonitorView', () => {
   })
 
   it('requires confirmation and sends the snapshot hash when applying', async () => {
+    api.getConfig.mockResolvedValueOnce({ ...config, mode: 'review' })
     const wrapper = mountView()
     await flushPromises()
 
@@ -202,10 +204,41 @@ describe('UpstreamPriceMonitorView', () => {
     wrapper.unmount()
   })
 
+  it('does not expose apply or rollback actions in monitor-only mode', async () => {
+    api.getConfig.mockResolvedValueOnce({ ...config, mode: 'observe' })
+    api.listRuns.mockResolvedValueOnce({
+      items: [{ ...completedRun, applied_at: '2026-08-30T00:01:00Z', rollback_available: true }],
+      total: 1,
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="apply-latest"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="rollback-latest"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows a durable applied state when the matching run was applied', async () => {
+    api.listRuns.mockResolvedValueOnce({
+      items: [{
+        ...completedRun,
+        finished_at: '2026-08-30T00:01:00Z',
+        applied_at: '2026-08-30T00:02:00Z',
+        rollback_available: true,
+        summary: { applied_models: 1 },
+      }],
+      total: 1,
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.upstreamPriceMonitor.applyState.appliedRun')
+    wrapper.unmount()
+  })
+
   it('submits the fixed active-only strategy and safety budgets without credentials', async () => {
     const wrapper = mountView()
     await flushPromises()
-    await wrapper.get('[data-testid="tab-config"]').trigger('click')
     await wrapper.get('[data-testid="config-panel"] form').trigger('submit')
     await flushPromises()
 
@@ -260,7 +293,6 @@ describe('UpstreamPriceMonitorView', () => {
   it('manages a newly discovered model without deleting channel pricing', async () => {
     const wrapper = mountView()
     await flushPromises()
-    await wrapper.get('[data-testid="tab-config"]').trigger('click')
     await wrapper.get('[data-testid="manage-model-deepseek-new-v1"]').trigger('click')
     await flushPromises()
 
@@ -272,12 +304,29 @@ describe('UpstreamPriceMonitorView', () => {
   it('refreshes the supported-model catalogue without starting a paid run', async () => {
     const wrapper = mountView()
     await flushPromises()
-    await wrapper.get('[data-testid="tab-config"]').trigger('click')
     await wrapper.get('[data-testid="discover-models"]').trigger('click')
     await flushPromises()
 
     expect(api.discoverModels).toHaveBeenCalledTimes(1)
     expect(api.createRun).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('supports monitor, review, and automatic modes with fixed frequency choices', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const mode = wrapper.get('[data-testid="config-mode"]')
+    expect(mode.findAll('option').map(option => option.attributes('value'))).toEqual(['observe', 'review', 'auto_apply'])
+    const interval = wrapper.get('[data-testid="config-interval"]')
+    expect(interval.findAll('option').map(option => option.attributes('value'))).toEqual(['60', '180', '360', '720', '1440'])
+
+    await mode.setValue('review')
+    await interval.setValue('180')
+    await wrapper.get('[data-testid="config-panel"] form').trigger('submit')
+    await flushPromises()
+
+    expect(api.updateConfig).toHaveBeenCalledWith(expect.objectContaining({ mode: 'review', interval_minutes: 180 }))
     wrapper.unmount()
   })
 })

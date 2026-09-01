@@ -31,6 +31,7 @@ type UpstreamPriceBillingSnapshot = domain.UpstreamPriceBillingSnapshot
 
 const (
 	UpstreamPriceMonitorModeObserve   = domain.UpstreamPriceMonitorModeObserve
+	UpstreamPriceMonitorModeReview    = domain.UpstreamPriceMonitorModeReview
 	UpstreamPriceMonitorModeAutoApply = domain.UpstreamPriceMonitorModeAutoApply
 
 	UpstreamPriceEvidenceStatusTrusted  = domain.UpstreamPriceEvidenceStatusTrusted
@@ -67,9 +68,9 @@ var (
 	)
 )
 
-// UpstreamPriceMonitorRepository is deliberately independent from channel and
-// display-pricing repositories. A future applier can consume a completed run
-// without allowing the passive reconciler to mutate production pricing.
+// UpstreamPriceMonitorRepository owns the durable probe snapshot and its
+// atomic channel/display apply transaction. Collection never mutates pricing;
+// only the explicit ApplyRun boundary can do so.
 type UpstreamPriceMonitorRepository interface {
 	GetConfig(context.Context) (*domain.UpstreamPriceMonitorConfig, error)
 	UpdateConfig(context.Context, *domain.UpstreamPriceMonitorConfig) error
@@ -360,6 +361,16 @@ func (s *UpstreamPriceMonitorService) ApplyRun(ctx context.Context, runID int64,
 	if err != nil {
 		return nil, err
 	}
+	// Observe mode is a hard no-write boundary, including the explicit
+	// administrator Apply action. Review and auto_apply both produce an
+	// actionable plan; only auto_apply executes it without a human click.
+	cfg, err := s.repo.GetConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil || cfg.Mode == domain.UpstreamPriceMonitorModeObserve {
+		return nil, ErrUpstreamPriceRunNotApplicable
+	}
 	scope, ok := ReadUpstreamPriceRunApplyScope(run)
 	if !ok {
 		return nil, ErrUpstreamPriceRunNotApplicable
@@ -392,6 +403,13 @@ func (s *UpstreamPriceMonitorService) ApplyRun(ctx context.Context, runID int64,
 
 func (s *UpstreamPriceMonitorService) RollbackRun(ctx context.Context, runID int64, snapshotHash string) (*domain.UpstreamPriceMonitorRun, error) {
 	if s == nil || s.repo == nil || runID <= 0 || strings.TrimSpace(snapshotHash) == "" {
+		return nil, ErrUpstreamPriceRunNotApplicable
+	}
+	cfg, err := s.repo.GetConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil || cfg.Mode == domain.UpstreamPriceMonitorModeObserve {
 		return nil, ErrUpstreamPriceRunNotApplicable
 	}
 	if err := s.repo.RollbackRun(ctx, runID, strings.TrimSpace(snapshotHash)); err != nil {
@@ -470,10 +488,11 @@ func normalizeAndValidateUpstreamPriceMonitorConfig(cfg *domain.UpstreamPriceMon
 	if cfg.Mode == "" {
 		cfg.Mode = domain.UpstreamPriceMonitorModeObserve
 	}
-	if cfg.Mode != domain.UpstreamPriceMonitorModeObserve && cfg.Mode != domain.UpstreamPriceMonitorModeAutoApply {
+	if cfg.Mode != domain.UpstreamPriceMonitorModeObserve && cfg.Mode != domain.UpstreamPriceMonitorModeReview &&
+		cfg.Mode != domain.UpstreamPriceMonitorModeAutoApply {
 		return ErrUpstreamPriceMonitorInvalidConfig
 	}
-	if cfg.IntervalMinutes != 1440 || math.Abs(cfg.Markup-upstreamPriceRequiredMarkup) > 1e-12 ||
+	if cfg.IntervalMinutes < 60 || cfg.IntervalMinutes > 1440 || math.Abs(cfg.Markup-upstreamPriceRequiredMarkup) > 1e-12 ||
 		math.IsNaN(cfg.Markup) || math.IsInf(cfg.Markup, 0) || cfg.DisplayMultiplierDecimals < 0 ||
 		cfg.DisplayMultiplierDecimals > 6 || cfg.PassiveSampleMaxAgeMinutes < 15 || cfg.PassiveSampleMaxAgeMinutes > 10080 {
 		return ErrUpstreamPriceMonitorInvalidConfig
@@ -482,7 +501,7 @@ func normalizeAndValidateUpstreamPriceMonitorConfig(cfg *domain.UpstreamPriceMon
 		cfg.ActiveProbeMaxModels < 1 || cfg.ActiveProbeMaxModels > len(domain.DefaultX5M5XDomesticModels) ||
 		!validPositiveProbeBudget(cfg.ActiveProbeRunBudgetUSD) ||
 		!validPositiveProbeBudget(cfg.ActiveProbeDailyBudgetUSD) ||
-		cfg.ActiveProbeRunBudgetUSD > 0.15 || cfg.ActiveProbeDailyBudgetUSD > 0.20 ||
+		cfg.ActiveProbeRunBudgetUSD > 0.15 || cfg.ActiveProbeDailyBudgetUSD > 0.40 ||
 		cfg.ActiveProbeRunBudgetUSD > cfg.ActiveProbeDailyBudgetUSD {
 		return ErrUpstreamPriceMonitorInvalidConfig
 	}
@@ -491,7 +510,7 @@ func normalizeAndValidateUpstreamPriceMonitorConfig(cfg *domain.UpstreamPriceMon
 	}
 	cfg.AccountIDs = uniquePositiveInt64s(cfg.AccountIDs)
 	cfg.ChannelIDs = uniquePositiveInt64s(cfg.ChannelIDs)
-	if (cfg.Mode == domain.UpstreamPriceMonitorModeAutoApply || cfg.ActiveProbeEnabled) &&
+	if (cfg.Mode == domain.UpstreamPriceMonitorModeReview || cfg.Mode == domain.UpstreamPriceMonitorModeAutoApply || cfg.ActiveProbeEnabled) &&
 		(len(cfg.AccountIDs) == 0 || len(cfg.ChannelIDs) == 0) {
 		return ErrUpstreamPriceMonitorInvalidConfig
 	}
@@ -1014,7 +1033,12 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 		return run, fmt.Errorf("finish upstream price monitor run: %w", finishErr)
 	}
 	if shouldAutoApplyUpstreamPriceRun(run, cfg) {
-		applied, applyErr := s.ApplyRun(ctx, run.ID, run.SnapshotHash)
+		// The probe loop may consume nearly all of its caller deadline. Once the
+		// durable snapshot is complete, give the atomic apply its own bounded
+		// context so cancellation cannot strand an approved auto_apply plan.
+		applyCtx, cancelApply := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		applied, applyErr := s.ApplyRun(applyCtx, run.ID, run.SnapshotHash)
+		cancelApply()
 		if applyErr != nil {
 			message := "automatic price apply failed: " + applyErr.Error()
 			failureCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

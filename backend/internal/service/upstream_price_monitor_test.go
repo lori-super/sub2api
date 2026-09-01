@@ -15,13 +15,13 @@ func TestDefaultUpstreamPriceMonitorConfigIsDisabledObserveOnly(t *testing.T) {
 	cfg := domain.DefaultUpstreamPriceMonitorConfig()
 	require.False(t, cfg.Enabled)
 	require.Equal(t, domain.UpstreamPriceMonitorModeObserve, cfg.Mode)
-	require.Equal(t, 1440, cfg.IntervalMinutes)
+	require.Equal(t, 360, cfg.IntervalMinutes)
 	require.InDelta(t, 1.20, cfg.Markup, 1e-12)
 	require.True(t, cfg.ActiveOnly)
 	require.Equal(t, 7, cfg.ActiveProbeMaxRequests)
 	require.Equal(t, 19, cfg.ActiveProbeMaxModels)
 	require.InDelta(t, 0.15, cfg.ActiveProbeRunBudgetUSD, 1e-12)
-	require.InDelta(t, 0.20, cfg.ActiveProbeDailyBudgetUSD, 1e-12)
+	require.InDelta(t, 0.40, cfg.ActiveProbeDailyBudgetUSD, 1e-12)
 	require.Len(t, cfg.DomesticModels, 19)
 	require.Contains(t, cfg.DomesticModels, "qwen3.8-flash")
 	require.Len(t, cfg.PerRequestModels, 14)
@@ -41,13 +41,14 @@ func TestNormalizeUpstreamPriceMonitorConfigRejectsModelsOutsideClosedDomesticSc
 func TestNormalizeUpstreamPriceMonitorConfigEnforcesActiveSafetyCaps(t *testing.T) {
 	base := domain.DefaultUpstreamPriceMonitorConfig()
 	for name, mutate := range map[string]func(*domain.UpstreamPriceMonitorConfig){
-		"interval":     func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.IntervalMinutes = 1439 },
-		"markup":       func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.Markup = 1.21 },
-		"active only":  func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveOnly = false },
-		"requests":     func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveProbeMaxRequests = 8 },
-		"models":       func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveProbeMaxModels = 20 },
-		"run budget":   func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveProbeRunBudgetUSD = 0.151 },
-		"daily budget": func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveProbeDailyBudgetUSD = 0.201 },
+		"interval too short": func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.IntervalMinutes = 59 },
+		"interval too long":  func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.IntervalMinutes = 1441 },
+		"markup":             func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.Markup = 1.21 },
+		"active only":        func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveOnly = false },
+		"requests":           func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveProbeMaxRequests = 8 },
+		"models":             func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveProbeMaxModels = 20 },
+		"run budget":         func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveProbeRunBudgetUSD = 0.151 },
+		"daily budget":       func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveProbeDailyBudgetUSD = 0.401 },
 		"budget ordering": func(cfg *domain.UpstreamPriceMonitorConfig) {
 			cfg.ActiveProbeRunBudgetUSD = 0.15
 			cfg.ActiveProbeDailyBudgetUSD = 0.14
@@ -223,7 +224,7 @@ func TestActiveProbeBudgetStopsBeforeStartingAnotherModel(t *testing.T) {
 	budget.runSpent = 0.151
 	require.Contains(t, budget.stopReason(), "run budget reached")
 
-	daily := newUpstreamPriceProbeBudget(&cfg, 0.199)
+	daily := newUpstreamPriceProbeBudget(&cfg, 0.399)
 	daily.modelsStarted++
 	daily.runSpent = 0.001
 	require.Contains(t, daily.stopReason(), "daily budget reached")
@@ -255,6 +256,9 @@ func TestScheduledAutoApplyAcceptsTrustedSubsetButSkipsZeroCoverage(t *testing.T
 	run.MatchedModels = 16
 	run.Status = domain.UpstreamPriceMonitorRunStatusPartial
 	require.False(t, shouldAutoApplyUpstreamPriceRun(run, &cfg))
+	run.Status = domain.UpstreamPriceMonitorRunStatusCompleted
+	cfg.Mode = domain.UpstreamPriceMonitorModeReview
+	require.False(t, shouldAutoApplyUpstreamPriceRun(run, &cfg), "review mode must wait for an administrator Apply action")
 }
 
 func TestSolveUpstreamTokenPricesRejectsIllConditionedTrafficWindows(t *testing.T) {

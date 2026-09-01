@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestApplyUpstreamTokenBaseIntervalsPreservesMultiplierOnlyFields(t *testing.T) {
+func TestApplyUpstreamTokenBaseIntervalsRejectsMultiplierOnlyTargetDimension(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
@@ -28,23 +28,25 @@ func TestApplyUpstreamTokenBaseIntervalsPreservesMultiplierOnlyFields(t *testing
 			"id", "input_price", "output_price", "cache_write_price", "cache_read_price", "per_request_price",
 			"has_input_multiplier", "has_output_multiplier", "has_cache_write_multiplier", "has_cache_read_multiplier",
 		}).AddRow(int64(101), nil, "0.000002", nil, nil, nil, true, false, false, false))
-	mock.ExpectExec(`UPDATE channel_pricing_intervals SET`).
-		WithArgs(int64(101), nil, "0.000003", nil, nil).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
 	snapshot := &upstreamPriceRollbackSnapshot{}
 	changed, err := applyUpstreamTokenBaseIntervals(
 		context.Background(), tx, 44, "0.000001", "0.000003", nil, nil, snapshot,
 	)
-	require.NoError(t, err)
-	require.True(t, changed)
-	require.Len(t, snapshot.Intervals, 1)
-	require.Nil(t, snapshot.Intervals[0].InputPrice)
-	require.Equal(t, "0.000002", *snapshot.Intervals[0].OutputPrice)
+	require.ErrorIs(t, err, service.ErrUpstreamPriceRunNotApplicable)
+	require.Contains(t, err.Error(), "input multiplier")
+	require.False(t, changed)
+	require.Empty(t, snapshot.Intervals)
 
 	mock.ExpectRollback()
 	require.NoError(t, tx.Rollback())
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRequireUpstreamModelChannelMatchRejectsUnpairedDisplayWrite(t *testing.T) {
+	require.NoError(t, requireUpstreamModelChannelMatch("deepseek-ok", 1))
+	err := requireUpstreamModelChannelMatch("deepseek-missing", 0)
+	require.ErrorIs(t, err, service.ErrUpstreamPriceRunNotApplicable)
+	require.Contains(t, err.Error(), "deepseek-missing")
 }
 
 func TestCalculateDisplayMultiplierUsesHalfUpRounding(t *testing.T) {
@@ -100,12 +102,12 @@ func TestLoadTrustedApplyEvidenceSelectsOnlyFinalActiveTokenEvidence(t *testing.
 		WithArgs(int64(71)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"account_id", "model_name", "billing_mode", "status", "source", "context_key",
-			"prices", "current_prices", "suggested_prices",
+			"prices", "current_prices", "suggested_prices", "display_prices_current", "display_multiplier_current",
 		}).AddRow(int64(3), "mimo-v2.5-pro", service.DisplayBillingModeToken,
 			string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceActiveProbe),
 			"active-final", []byte(`{"cache_read_per_million":0.05}`),
 			[]byte(`{"input_per_million":0.12,"cache_read_per_million":0.04}`),
-			[]byte(`{"cache_read_per_million":0.06}`)))
+			[]byte(`{"cache_read_per_million":0.06}`), []byte(`{}`), nil))
 
 	items, skipped, err := loadTrustedApplyEvidence(context.Background(), tx, 71, []int64{3})
 	require.NoError(t, err)
@@ -133,16 +135,16 @@ func TestLoadTrustedApplyEvidenceSkipsFixedFeeModelAndKeepsOtherModels(t *testin
 		WithArgs(int64(72)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"account_id", "model_name", "billing_mode", "status", "source", "context_key",
-			"prices", "current_prices", "suggested_prices",
+			"prices", "current_prices", "suggested_prices", "display_prices_current", "display_multiplier_current",
 		}).AddRow(int64(3), "fixed-fee-model", service.DisplayBillingModeToken,
 			string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceActiveProbe),
 			"active-final", []byte(`{"fixed_per_request":0.001,"input_per_million":0.2}`),
 			[]byte(`{"input_per_million":0.1}`),
-			[]byte(`{"fixed_per_request":0.0012,"input_per_million":0.24}`)).
+			[]byte(`{"fixed_per_request":0.0012,"input_per_million":0.24}`), []byte(`{}`), nil).
 			AddRow(int64(3), "representable-model", service.DisplayBillingModeToken,
 				string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceActiveProbe),
 				"active-final", []byte(`{"input_per_million":0.2}`),
-				[]byte(`{"input_per_million":0.1}`), []byte(`{"input_per_million":0.24}`)))
+				[]byte(`{"input_per_million":0.1}`), []byte(`{"input_per_million":0.24}`), []byte(`{}`), nil))
 
 	items, skipped, err := loadTrustedApplyEvidence(context.Background(), tx, 72, []int64{3})
 	require.NoError(t, err)
@@ -183,12 +185,12 @@ func TestApplyRunAllFixedFeeModelsRecordsSkipSummaryThenReturnsNotApplicable(t *
 		WithArgs(int64(75)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"account_id", "model_name", "billing_mode", "status", "source", "context_key",
-			"prices", "current_prices", "suggested_prices",
+			"prices", "current_prices", "suggested_prices", "display_prices_current", "display_multiplier_current",
 		}).AddRow(int64(3), "fixed-only", service.DisplayBillingModeToken,
 			string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceActiveProbe),
 			"active-final", []byte(`{"fixed_per_request":0.001,"input_per_million":0.2}`),
 			[]byte(`{"input_per_million":0.1}`),
-			[]byte(`{"fixed_per_request":0.0012,"input_per_million":0.24}`)))
+			[]byte(`{"fixed_per_request":0.0012,"input_per_million":0.24}`), []byte(`{}`), nil))
 	mock.ExpectExec(`summary=jsonb_set\(summary,'\{skipped_models\}',\$2::jsonb,true\)`).
 		WithArgs(int64(75), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -196,6 +198,34 @@ func TestApplyRunAllFixedFeeModelsRecordsSkipSummaryThenReturnsNotApplicable(t *
 
 	repo := &upstreamPriceMonitorRepository{db: db}
 	err = repo.ApplyRun(context.Background(), 75, "snapshot", []int64{8}, []int64{3}, 3, 60, configUpdatedAt, 1)
+	require.ErrorIs(t, err, service.ErrUpstreamPriceRunNotApplicable)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestApplyRunObserveModeNeverWritesPrices(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	now := time.Now().UTC()
+	configUpdatedAt := now.Add(-time.Hour)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT trigger,status,snapshot_hash,applied_at,finished_at`).
+		WithArgs(int64(76)).
+		WillReturnRows(sqlmock.NewRows([]string{"trigger", "status", "snapshot_hash", "applied_at", "finished_at"}).
+			AddRow(string(domain.UpstreamPriceMonitorRunTriggerManual), string(domain.UpstreamPriceMonitorRunStatusCompleted),
+				"snapshot", nil, now))
+	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM upstream_price_monitor_runs`).
+		WithArgs(now, int64(76)).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery(`SELECT enabled,mode,updated_at FROM upstream_price_monitor_config`).
+		WillReturnRows(sqlmock.NewRows([]string{"enabled", "mode", "updated_at"}).
+			AddRow(true, string(domain.UpstreamPriceMonitorModeObserve), configUpdatedAt))
+	mock.ExpectRollback()
+
+	repo := &upstreamPriceMonitorRepository{db: db}
+	err = repo.ApplyRun(context.Background(), 76, "snapshot", []int64{8}, []int64{3}, 3, 60, configUpdatedAt, 1)
 	require.ErrorIs(t, err, service.ErrUpstreamPriceRunNotApplicable)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -212,11 +242,11 @@ func TestLoadTrustedApplyEvidenceRejectsSuggestionNotEqualToMeasuredTimesMarkup(
 		WithArgs(int64(73)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"account_id", "model_name", "billing_mode", "status", "source", "context_key",
-			"prices", "current_prices", "suggested_prices",
+			"prices", "current_prices", "suggested_prices", "display_prices_current", "display_multiplier_current",
 		}).AddRow(int64(3), "bad-markup-model", service.DisplayBillingModeToken,
 			string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceActiveProbe),
 			"active-final", []byte(`{"input_per_million":0.2}`), []byte(`{"input_per_million":0.1}`),
-			[]byte(`{"input_per_million":0.3}`)))
+			[]byte(`{"input_per_million":0.3}`), []byte(`{}`), nil))
 
 	_, _, err = loadTrustedApplyEvidence(context.Background(), tx, 73, []int64{3})
 	require.ErrorIs(t, err, service.ErrUpstreamPriceSnapshotMismatch)
@@ -316,6 +346,8 @@ func TestRollbackRunRejectsLegacyDisplaySnapshotWithoutMutatingDisplayPrices(t *
 
 	mock.ExpectBegin()
 	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT mode FROM upstream_price_monitor_config`).
+		WillReturnRows(sqlmock.NewRows([]string{"mode"}).AddRow(string(domain.UpstreamPriceMonitorModeReview)))
 	mock.ExpectQuery(`SELECT snapshot_hash,applied_at,rollback_available,rollback_snapshot`).
 		WithArgs(int64(74)).
 		WillReturnRows(sqlmock.NewRows([]string{"snapshot_hash", "applied_at", "rollback_available", "rollback_snapshot"}).
@@ -327,6 +359,60 @@ func TestRollbackRunRejectsLegacyDisplaySnapshotWithoutMutatingDisplayPrices(t *
 
 	repo := &upstreamPriceMonitorRepository{db: db}
 	err = repo.RollbackRun(context.Background(), 74, "snapshot")
+	require.ErrorIs(t, err, service.ErrUpstreamPriceRunNotApplicable)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRollbackRunRestoresExactTokenDisplayOverrides(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	now := time.Now().UTC()
+	raw, err := json.Marshal(upstreamPriceRollbackSnapshot{
+		Displays: []upstreamPriceDisplayRollback{{
+			ID: 82, ModelMultiplier: stringPointer("0.12"), AfterModelMultiplier: stringPointer("0.12"),
+			DisplayInputPrice: stringPointer("0.10"), AfterDisplayInputPrice: stringPointer("0.20"),
+		}},
+	})
+	require.NoError(t, err)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT mode FROM upstream_price_monitor_config`).
+		WillReturnRows(sqlmock.NewRows([]string{"mode"}).AddRow(string(domain.UpstreamPriceMonitorModeReview)))
+	mock.ExpectQuery(`SELECT snapshot_hash,applied_at,rollback_available,rollback_snapshot`).
+		WithArgs(int64(78)).
+		WillReturnRows(sqlmock.NewRows([]string{"snapshot_hash", "applied_at", "rollback_available", "rollback_snapshot"}).
+			AddRow("snapshot", now, true, raw))
+	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM upstream_price_monitor_runs`).
+		WithArgs(now).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectExec(`UPDATE display_model_prices SET`).
+		WithArgs(int64(82), "0.10", nil, nil, nil, "0.12", "0.20", nil, nil, nil).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE upstream_price_monitor_runs SET rollback_available=FALSE`).
+		WithArgs(int64(78), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	repo := &upstreamPriceMonitorRepository{db: db}
+	err = repo.RollbackRun(context.Background(), 78, "snapshot")
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRollbackRunObserveModeNeverWritesPrices(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT mode FROM upstream_price_monitor_config`).
+		WillReturnRows(sqlmock.NewRows([]string{"mode"}).AddRow(string(domain.UpstreamPriceMonitorModeObserve)))
+	mock.ExpectRollback()
+
+	repo := &upstreamPriceMonitorRepository{db: db}
+	err = repo.RollbackRun(context.Background(), 79, "snapshot")
 	require.ErrorIs(t, err, service.ErrUpstreamPriceRunNotApplicable)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -351,6 +437,51 @@ func TestLoadLockedUpstreamChannelPricingRowsFiltersOpenAIPlatform(t *testing.T)
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	require.Equal(t, int64(91), rows[0].ID)
+
+	mock.ExpectRollback()
+	require.NoError(t, tx.Rollback())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestApplyUpstreamTokenDisplayOverridesUpdatesExactPricesOnly(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+
+	mock.ExpectQuery(`SELECT d.id,d.model_multiplier::text`).
+		WithArgs("deepseek-display").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "model_multiplier", "input", "output", "cache_write", "cache_read", "effective_multiplier",
+			"actual_input", "actual_output", "actual_cache_write", "actual_cache_read",
+		}).AddRow(int64(92), "0.12", "0.10000000", nil, nil, "0.03000000", 0.12, 0.1, nil, nil, 0.03))
+	mock.ExpectExec(`UPDATE display_model_prices SET`).
+		WithArgs(int64(92), "0.20000000", "0.50000000", nil, "0.04000000").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	currentInput, currentCacheRead := 0.1, 0.03
+	targetInput, targetOutput, targetCacheRead := 0.2, 0.5, 0.04
+	multiplier := 0.12
+	snapshot := &upstreamPriceRollbackSnapshot{}
+	changed, err := applyUpstreamTokenDisplayOverrides(context.Background(), tx, upstreamPriceApplyEvidence{
+		Model: "deepseek-display", BillingMode: service.DisplayBillingModeToken,
+		Suggested: domain.UpstreamPriceVector{
+			InputPerMillion: &targetInput, OutputPerMillion: &targetOutput, CacheReadPerMillion: &targetCacheRead,
+		},
+		DisplayPricesCurrent: domain.UpstreamPriceVector{
+			InputPerMillion: &currentInput, CacheReadPerMillion: &currentCacheRead,
+		},
+		DisplayMultiplierCurrent: &multiplier,
+	}, snapshot)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Len(t, snapshot.Displays, 1)
+	require.Equal(t, "0.10000000", *snapshot.Displays[0].DisplayInputPrice)
+	require.Equal(t, "0.20000000", *snapshot.Displays[0].AfterDisplayInputPrice)
+	require.Nil(t, snapshot.Displays[0].DisplayCacheWritePrice)
+	require.Equal(t, snapshot.Displays[0].ModelMultiplier, snapshot.Displays[0].AfterModelMultiplier)
 
 	mock.ExpectRollback()
 	require.NoError(t, tx.Rollback())
@@ -386,9 +517,10 @@ func TestFreezeEvidenceApplySnapshotPersistsCurrentPricesAndMultiplier(t *testin
 			AddRow("deepseek-freeze", service.DisplayBillingModeToken, 1.0, 2.0, nil, nil, nil, nil, nil))
 	mock.ExpectQuery(`(?s)SELECT LOWER\(d.model_name\).*d.platform='openai'`).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"model", "billing_mode", "multiplier", "official_input", "official_output", "low", "middle", "high",
-		}).AddRow("deepseek-request-freeze", service.DisplayBillingModePerRequest, 1, nil, nil, 0.01, 0.015, 0.02).
-			AddRow("deepseek-freeze", service.DisplayBillingModeToken, 0.5, "2", "4", nil, nil, nil))
+			"model", "billing_mode", "multiplier", "official_input", "official_output",
+			"display_input", "display_output", "display_cache_write", "display_cache_read", "low", "middle", "high",
+		}).AddRow("deepseek-request-freeze", service.DisplayBillingModePerRequest, 1, nil, nil, nil, nil, nil, nil, 0.01, 0.015, 0.02).
+			AddRow("deepseek-freeze", service.DisplayBillingModeToken, 0.5, "2", "4", 0.8, nil, nil, nil, nil, nil, nil))
 	mock.ExpectExec(`UPDATE upstream_price_monitor_evidence SET`).
 		WithArgs(int64(32), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(12)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -407,6 +539,7 @@ func TestFreezeEvidenceApplySnapshotPersistsCurrentPricesAndMultiplier(t *testin
 	require.InDelta(t, 1, *evidence[1].CurrentPrices.InputPerMillion, 1e-12)
 	require.NotNil(t, evidence[1].DisplayMultiplierCurrent)
 	require.InDelta(t, 0.5, *evidence[1].DisplayMultiplierCurrent, 1e-12)
+	require.InDelta(t, 0.8, *evidence[1].DisplayPricesCurrent.InputPerMillion, 1e-12)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -516,8 +649,9 @@ func TestListEvidenceByRunMayEnrichRunningRun(t *testing.T) {
 	mock.ExpectQuery(`(?s)SELECT LOWER\(d.model_name\).*d.platform='openai'`).
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"model", "billing_mode", "multiplier", "official_input", "official_output", "low", "middle", "high",
-		}).AddRow("deepseek-running", service.DisplayBillingModeToken, 0.5, "3", "6", nil, nil, nil))
+			"model", "billing_mode", "multiplier", "official_input", "official_output",
+			"display_input", "display_output", "display_cache_write", "display_cache_read", "low", "middle", "high",
+		}).AddRow("deepseek-running", service.DisplayBillingModeToken, 0.5, "3", "6", 1.2, nil, nil, nil, nil, nil, nil))
 
 	repo := &upstreamPriceMonitorRepository{db: db}
 	evidence, err := repo.ListEvidenceByRun(context.Background(), 22)

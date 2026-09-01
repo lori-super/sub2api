@@ -56,13 +56,18 @@
 
       <template v-else>
         <section v-if="activeTab === 'overview'" class="space-y-5" data-testid="overview-panel">
-          <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
+          <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
             <article class="monitor-stat-card">
               <span class="monitor-stat-label">{{ t('admin.upstreamPriceMonitor.runtime.status') }}</span>
               <span class="mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold" :class="runtimeStatusClass">
                 {{ statusLabel(runtime?.status || 'disabled') }}
               </span>
-              <span class="mt-2 text-xs text-gray-400">{{ modeLabel(configDraft.mode) }}</span>
+              <span class="mt-2 text-xs text-gray-400">{{ runtimeStatusHint }}</span>
+            </article>
+            <article class="monitor-stat-card">
+              <span class="monitor-stat-label">{{ t('admin.upstreamPriceMonitor.runtime.mode') }}</span>
+              <strong class="monitor-stat-value text-base">{{ modeLabel(configDraft.mode) }}</strong>
+              <span class="mt-2 text-xs text-gray-400">{{ modeShortHint(configDraft.mode) }}</span>
             </article>
             <article class="monitor-stat-card">
               <span class="monitor-stat-label">{{ t('admin.upstreamPriceMonitor.runtime.coverage') }}</span>
@@ -72,19 +77,9 @@
               </div>
             </article>
             <article class="monitor-stat-card">
-              <span class="monitor-stat-label">{{ t('admin.upstreamPriceMonitor.runtime.lastRun') }}</span>
-              <strong class="monitor-stat-value text-base">{{ formatTimestamp(runtime?.last_run_at, 'last') }}</strong>
-            </article>
-            <article class="monitor-stat-card">
               <span class="monitor-stat-label">{{ t('admin.upstreamPriceMonitor.runtime.nextRun') }}</span>
               <strong class="monitor-stat-value text-base">{{ formatTimestamp(runtime?.next_run_at, 'next') }}</strong>
-            </article>
-            <article class="monitor-stat-card">
-              <span class="monitor-stat-label">{{ t('admin.upstreamPriceMonitor.runtime.runCost') }}</span>
-              <strong class="monitor-stat-value font-mono" data-testid="current-run-cost">{{ formatMoney(currentRunCost) }}</strong>
-              <span class="mt-2 text-xs text-gray-400">
-                {{ t('admin.upstreamPriceMonitor.runtime.runBudget', { value: formatMoney(configDraft.active_probe_run_budget_usd) }) }}
-              </span>
+              <span class="mt-2 text-xs text-gray-400">{{ intervalLabel(configDraft.interval_minutes) }}</span>
             </article>
             <article class="monitor-stat-card">
               <span class="monitor-stat-label">{{ t('admin.upstreamPriceMonitor.runtime.todayCost') }}</span>
@@ -97,16 +92,14 @@
 
           <div
             class="flex flex-col gap-4 rounded-2xl border px-4 py-4 sm:flex-row sm:items-center sm:justify-between"
-            :class="configDraft.mode === 'auto_apply'
-              ? 'border-emerald-200 bg-emerald-50/70 dark:border-emerald-500/25 dark:bg-emerald-500/10'
-              : 'border-blue-200 bg-blue-50/70 dark:border-blue-500/25 dark:bg-blue-500/10'"
+            :class="modeBannerClass"
           >
             <div class="flex min-w-0 items-start gap-3">
-              <Icon :name="configDraft.mode === 'auto_apply' ? 'bolt' : 'eye'" size="sm" class="mt-0.5 shrink-0" />
+              <Icon :name="configDraft.mode === 'auto_apply' ? 'bolt' : configDraft.mode === 'review' ? 'clipboard' : 'eye'" size="sm" class="mt-0.5 shrink-0" />
               <div>
                 <p class="font-semibold text-gray-900 dark:text-white">{{ modeLabel(configDraft.mode) }}</p>
                 <p class="mt-1 text-xs leading-5 text-gray-600 dark:text-dark-300">
-                  {{ t(`admin.upstreamPriceMonitor.overview.modeHint${configDraft.mode === 'auto_apply' ? 'Auto' : 'Observe'}`) }}
+                  {{ modeLongHint(configDraft.mode) }}
                 </p>
               </div>
             </div>
@@ -121,8 +114,12 @@
                 <Icon name="play" size="sm" />
                 {{ creatingRun ? t('admin.upstreamPriceMonitor.overview.running') : t('admin.upstreamPriceMonitor.overview.runNow') }}
               </button>
+              <button type="button" class="btn btn-secondary" data-testid="open-config" @click="openConfigPanel">
+                <Icon name="cog" size="sm" />
+                {{ t('admin.upstreamPriceMonitor.overview.rules') }}
+              </button>
               <button
-                v-if="latestApplicableRun"
+                v-if="configDraft.mode === 'review' && latestApplicableRun"
                 type="button"
                 class="btn btn-secondary"
                 data-testid="apply-latest"
@@ -131,7 +128,7 @@
                 {{ t('admin.upstreamPriceMonitor.overview.apply') }}
               </button>
               <button
-                v-if="latestRollbackRun"
+                v-if="configDraft.mode !== 'observe' && latestRollbackRun"
                 type="button"
                 class="btn btn-secondary text-amber-700 dark:text-amber-300"
                 data-testid="rollback-latest"
@@ -144,7 +141,7 @@
 
           <div
             v-if="runtime?.key_exclusive === false || hasReconciliationMismatch"
-            class="flex items-start gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-500/25 dark:bg-red-500/10 dark:text-red-200"
+            class="flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200"
             data-testid="key-exclusive-warning"
           >
             <Icon name="exclamationTriangle" size="sm" class="mt-0.5 shrink-0" />
@@ -153,12 +150,12 @@
 
           <div
             v-if="runtime?.last_error"
-            class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 dark:border-red-500/25 dark:bg-red-500/10"
+            class="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-500/10"
           >
-            <p class="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-300">
+            <p class="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
               {{ t('admin.upstreamPriceMonitor.runtime.errorTitle') }}
             </p>
-            <p class="mt-1 break-words text-sm text-red-800 dark:text-red-200">{{ localizedMonitorError(runtime.last_error) }}</p>
+            <p class="mt-1 break-words text-sm text-amber-800 dark:text-amber-200">{{ localizedMonitorError(runtime.last_error) }}</p>
           </div>
 
           <article class="monitor-panel overflow-hidden">
@@ -181,79 +178,71 @@
               </div>
             </div>
 
-            <div class="overflow-x-auto">
-              <table class="w-full min-w-[1120px] text-left text-sm">
-                <thead class="bg-gray-50/80 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:bg-dark-900/40 dark:text-dark-400">
-                  <tr>
-                    <th class="px-5 py-3">{{ t('admin.upstreamPriceMonitor.overview.model') }}</th>
-                    <th class="px-4 py-3">{{ t('admin.upstreamPriceMonitor.overview.evidence') }}</th>
-                    <th class="px-4 py-3">{{ t('admin.upstreamPriceMonitor.overview.reconciliation') }}</th>
-                    <th class="px-4 py-3">{{ t('admin.upstreamPriceMonitor.overview.prices') }}</th>
-                    <th class="px-4 py-3">{{ t('admin.upstreamPriceMonitor.overview.displayMultiplier') }}</th>
-                    <th class="px-5 py-3">{{ t('admin.upstreamPriceMonitor.overview.observedAt') }}</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-100 dark:divide-dark-700/70">
-                  <tr v-for="item in filteredEvidence" :key="`${item.account_id}:${item.model}`" class="align-top hover:bg-gray-50/60 dark:hover:bg-dark-700/20">
-                    <td class="px-5 py-4">
-                      <p class="font-mono font-semibold text-gray-900 dark:text-white">{{ item.model }}</p>
-                      <div class="mt-1 flex flex-wrap gap-1.5 text-[11px]">
-                        <span class="monitor-chip">{{ item.billing_mode === 'per_request' ? t('admin.upstreamPriceMonitor.overview.billingRequest') : t('admin.upstreamPriceMonitor.overview.billingToken') }}</span>
-                        <span v-if="item.account_id > 0" class="monitor-chip">{{ t('admin.upstreamPriceMonitor.overview.account', { id: item.account_id }) }}</span>
-                      </div>
-                    </td>
-                    <td class="px-4 py-4">
-                      <div class="flex flex-wrap items-center gap-1.5">
-                        <span class="rounded-full px-2.5 py-1 text-xs font-semibold" :class="evidenceStatusClass(item.status)">{{ statusLabel(item.status) }}</span>
-                        <span class="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600 dark:bg-dark-700 dark:text-dark-200">
-                          {{ sourceLabel(item.source) }}
-                        </span>
-                      </div>
-                      <p class="mt-2 text-xs text-gray-500 dark:text-dark-400">{{ t('admin.upstreamPriceMonitor.overview.samples', { count: item.sample_count }) }}</p>
-                      <p v-if="item.last_error" class="mt-1 max-w-[240px] break-words text-xs text-red-500">{{ localizedMonitorError(item.last_error) }}</p>
-                    </td>
-                    <td class="px-4 py-4">
-                      <p class="text-xs font-semibold" :class="isEvidenceMismatch(item) ? 'text-red-600 dark:text-red-300' : 'text-emerald-600 dark:text-emerald-300'">
-                        {{ reconciliationLabel(item) }}
-                      </p>
-                      <p v-if="hasLedgerDelta(item)" class="mt-1 font-mono text-[11px] text-gray-400">
-                        {{ t('admin.upstreamPriceMonitor.overview.reconciliationDelta', { local: formatDelta(item.local_delta), remote: formatDelta(item.remote_delta) }) }}
-                      </p>
-                    </td>
-                    <td class="px-4 py-4">
-                      <div class="grid min-w-[290px] gap-x-4 gap-y-1.5 text-xs" :class="item.billing_mode === 'per_request' ? 'grid-cols-3' : 'grid-cols-2'">
-                        <div v-for="field in priceFields(item)" :key="field.key" class="flex items-center justify-between gap-2">
-                          <span class="flex items-center gap-1.5 text-gray-500 dark:text-dark-400">
-                            <span
-                              class="rounded px-1.5 py-0.5 text-[10px] font-semibold"
-                              :class="dimensionStatusClass(field.status)"
-                              :data-testid="`dimension-status-${item.model}-${field.key}`"
-                            >
-                              {{ dimensionStatusLabel(field.status) }}
-                            </span>
-                            {{ field.label }}
-                          </span>
-                          <span class="whitespace-nowrap font-mono text-gray-800 dark:text-gray-100">
-                            {{ formatPrice(field.current) }}
-                            <span class="px-0.5 text-gray-300">→</span>
-                            <strong :class="priceChanged(field.current, field.suggested) ? 'text-emerald-600 dark:text-emerald-300' : ''">{{ formatPrice(field.suggested) }}</strong>
-                          </span>
-                        </div>
-                      </div>
-                    </td>
-                    <td class="px-4 py-4 font-mono text-xs text-gray-800 dark:text-gray-100">
-                      {{ formatMultiplier(item.display_multiplier_current) }}
-                      <span class="px-1 text-gray-300">→</span>
-                      <strong :class="priceChanged(item.display_multiplier_current, item.display_multiplier_suggested) ? 'text-emerald-600 dark:text-emerald-300' : ''">
-                        {{ formatMultiplier(item.display_multiplier_suggested) }}
-                      </strong>
-                    </td>
-                    <td class="px-5 py-4 text-xs text-gray-500 dark:text-dark-400">
+            <div class="divide-y divide-gray-100 dark:divide-dark-700/70">
+              <article
+                v-for="item in filteredEvidence"
+                :key="`${item.account_id}:${item.model}`"
+                class="px-4 py-5 transition-colors hover:bg-gray-50/60 dark:hover:bg-dark-700/20 sm:px-5"
+              >
+                <div class="grid gap-5 lg:grid-cols-[minmax(180px,1.15fr)_repeat(3,minmax(145px,1fr))_minmax(120px,.8fr)]">
+                  <div class="min-w-0">
+                    <p class="break-all font-mono text-sm font-bold text-gray-900 dark:text-white">{{ item.model }}</p>
+                    <div class="mt-2 flex flex-wrap gap-1.5">
+                      <span class="monitor-chip">{{ item.billing_mode === 'per_request' ? t('admin.upstreamPriceMonitor.overview.billingRequest') : t('admin.upstreamPriceMonitor.overview.billingToken') }}</span>
+                      <span class="rounded-full px-2.5 py-1 text-[11px] font-semibold" :class="evidenceStatusClass(item.status)">{{ statusLabel(item.status) }}</span>
+                    </div>
+                    <p class="mt-2 text-xs text-gray-400">
                       {{ item.observed_at ? formatDateTime(item.observed_at) : t('admin.upstreamPriceMonitor.overview.noEvidenceTime') }}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+                      · {{ t('admin.upstreamPriceMonitor.overview.samples', { count: item.sample_count }) }}
+                    </p>
+                  </div>
+
+                  <div class="price-summary-column">
+                    <p class="price-summary-title">{{ t('admin.upstreamPriceMonitor.overview.currentPrices') }}</p>
+                    <div v-for="field in visiblePriceFields(item)" :key="`current-${field.key}`" class="price-summary-row">
+                      <span>{{ field.label }}</span><strong>{{ formatPrice(field.current) }}</strong>
+                    </div>
+                    <p v-if="hasDisplayPrices(item)" class="mt-2 border-t border-gray-100 pt-2 text-[11px] font-semibold text-gray-400 dark:border-dark-700">
+                      {{ t('admin.upstreamPriceMonitor.overview.displayPrices') }}
+                    </p>
+                    <template v-if="hasDisplayPrices(item)">
+                      <div v-for="field in visiblePriceFields(item)" :key="`display-${field.key}`" class="price-summary-row text-gray-500">
+                        <span>{{ field.label }}</span><strong>{{ formatPrice(field.display) }}</strong>
+                      </div>
+                    </template>
+                  </div>
+
+                  <div class="price-summary-column bg-blue-50/50 dark:bg-blue-500/5">
+                    <p class="price-summary-title text-blue-700 dark:text-blue-300">{{ t('admin.upstreamPriceMonitor.overview.measuredPrices') }}</p>
+                    <div v-for="field in visiblePriceFields(item)" :key="`observed-${field.key}`" class="price-summary-row">
+                      <span class="flex items-center gap-1.5">
+                        <i class="h-1.5 w-1.5 rounded-full" :class="dimensionDotClass(field.status)" />{{ field.label }}
+                      </span>
+                      <strong>{{ formatPrice(field.observed) }}</strong>
+                    </div>
+                  </div>
+
+                  <div class="price-summary-column bg-emerald-50/60 dark:bg-emerald-500/5">
+                    <p class="price-summary-title text-emerald-700 dark:text-emerald-300">{{ t('admin.upstreamPriceMonitor.overview.targetPrices') }}</p>
+                    <div v-for="field in visiblePriceFields(item)" :key="`target-${field.key}`" class="price-summary-row">
+                      <span>{{ field.label }}</span>
+                      <strong :class="priceChanged(field.current, field.suggested) ? 'text-emerald-700 dark:text-emerald-300' : ''">{{ formatPrice(field.suggested) }}</strong>
+                    </div>
+                    <p class="mt-2 text-[11px] text-gray-400">{{ t('admin.upstreamPriceMonitor.overview.targetFormula') }}</p>
+                  </div>
+
+                  <div class="min-w-0 lg:text-right">
+                    <p class="price-summary-title">{{ t('admin.upstreamPriceMonitor.overview.applyState') }}</p>
+                    <span class="mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold" :class="applyStateClass(item)">
+                      {{ applyStateLabel(item) }}
+                    </span>
+                    <p class="mt-2 text-xs text-gray-500 dark:text-dark-400">{{ reconciliationLabel(item) }}</p>
+                    <div v-if="item.last_error || isEvidenceMismatch(item)" class="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-left text-xs leading-5 text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+                      {{ localizedMonitorError(item.last_error || item.reconciliation_status) }}
+                    </div>
+                  </div>
+                </div>
+              </article>
             </div>
             <p v-if="filteredEvidence.length === 0" class="px-5 py-12 text-center text-sm text-gray-400">
               {{ t('admin.upstreamPriceMonitor.overview.empty') }}
@@ -261,8 +250,15 @@
           </article>
         </section>
 
-        <section v-else-if="activeTab === 'config'" class="space-y-5" data-testid="config-panel">
-          <article class="monitor-panel p-5 sm:p-6">
+        <details ref="configPanelRef" v-if="activeTab === 'overview'" class="monitor-panel group overflow-hidden" data-testid="config-panel">
+          <summary class="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 [&::-webkit-details-marker]:hidden">
+            <div>
+              <p class="font-bold text-gray-900 dark:text-white">{{ t('admin.upstreamPriceMonitor.config.collapsedTitle') }}</p>
+              <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">{{ t('admin.upstreamPriceMonitor.config.collapsedHint') }}</p>
+            </div>
+            <Icon name="chevronDown" size="sm" class="shrink-0 text-gray-400 transition-transform group-open:rotate-180" />
+          </summary>
+          <article class="border-t border-gray-100 p-5 dark:border-dark-700 sm:p-6">
             <div class="flex flex-wrap items-start justify-between gap-3 border-b border-gray-100 pb-5 dark:border-dark-700">
               <div>
                 <h2 class="font-bold text-gray-900 dark:text-white">{{ t('admin.upstreamPriceMonitor.config.title') }}</h2>
@@ -329,14 +325,18 @@
               <div class="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
                 <label class="form-field">
                   <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.mode') }}</span>
-                  <select v-model="configDraft.mode" disabled class="input mt-1.5 bg-gray-50 dark:bg-dark-900/30" data-testid="config-mode">
+                  <select v-model="configDraft.mode" class="input mt-1.5" data-testid="config-mode">
+                    <option value="observe">{{ t('admin.upstreamPriceMonitor.mode.observe') }}</option>
+                    <option value="review">{{ t('admin.upstreamPriceMonitor.mode.review') }}</option>
                     <option value="auto_apply">{{ t('admin.upstreamPriceMonitor.mode.auto_apply') }}</option>
                   </select>
                   <span class="config-hint mt-1">{{ t('admin.upstreamPriceMonitor.config.modeHint') }}</span>
                 </label>
                 <label class="form-field">
                   <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.interval') }}</span>
-                  <input v-model.number="configDraft.interval_minutes" type="number" min="1440" max="1440" step="1440" readonly class="input mt-1.5 bg-gray-50 font-mono dark:bg-dark-900/30" data-testid="config-interval" />
+                  <select v-model.number="configDraft.interval_minutes" class="input mt-1.5" data-testid="config-interval">
+                    <option v-for="option in intervalOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                  </select>
                   <span class="config-hint mt-1">{{ t('admin.upstreamPriceMonitor.config.intervalHint') }}</span>
                 </label>
                 <label class="form-field">
@@ -365,7 +365,7 @@
                 </label>
                 <label class="form-field">
                   <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.dailyBudget') }}</span>
-                  <input v-model.number="configDraft.active_probe_daily_budget_usd" type="number" min="0.01" max="0.20" step="0.01" class="input mt-1.5 font-mono" data-testid="config-daily-budget" />
+                  <input v-model.number="configDraft.active_probe_daily_budget_usd" type="number" min="0.01" max="0.40" step="0.01" class="input mt-1.5 font-mono" data-testid="config-daily-budget" />
                   <span class="config-hint mt-1">{{ t('admin.upstreamPriceMonitor.config.dailyBudgetHint') }}</span>
                 </label>
               </div>
@@ -490,7 +490,7 @@
               </div>
             </form>
           </article>
-        </section>
+        </details>
 
         <section v-else class="space-y-5" data-testid="history-panel">
           <article class="monitor-panel overflow-hidden">
@@ -504,51 +504,41 @@
                 <option v-for="status in runStatuses" :key="status" :value="status">{{ statusLabel(status) }}</option>
               </select>
             </div>
-            <div class="overflow-x-auto">
-              <table class="w-full min-w-[980px] text-left text-sm">
-                <thead class="bg-gray-50/80 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:bg-dark-900/40 dark:text-dark-400">
-                  <tr>
-                    <th class="px-5 py-3">{{ t('admin.upstreamPriceMonitor.history.startedAt') }}</th>
-                    <th class="px-4 py-3">{{ t('admin.upstreamPriceMonitor.history.trigger') }}</th>
-                    <th class="px-4 py-3">{{ t('admin.upstreamPriceMonitor.history.mode') }}</th>
-                    <th class="px-4 py-3">{{ t('admin.upstreamPriceMonitor.history.result') }}</th>
-                    <th class="px-4 py-3">{{ t('admin.upstreamPriceMonitor.history.cost') }}</th>
-                    <th class="px-4 py-3">{{ t('admin.upstreamPriceMonitor.history.snapshot') }}</th>
-                    <th class="px-5 py-3 text-right">{{ t('admin.upstreamPriceMonitor.history.actions') }}</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-100 dark:divide-dark-700/70">
-                  <tr v-for="run in runs" :key="run.id" class="hover:bg-gray-50/60 dark:hover:bg-dark-700/20">
-                    <td class="whitespace-nowrap px-5 py-4 text-xs text-gray-600 dark:text-dark-300">{{ formatDateTime(run.started_at) }}</td>
-                    <td class="px-4 py-4 text-xs text-gray-700 dark:text-dark-200">{{ triggerLabel(run.trigger) }}</td>
-                    <td class="px-4 py-4"><span class="monitor-chip">{{ modeLabel(run.dry_run ? 'dry_run' : run.mode) }}</span></td>
-                    <td class="px-4 py-4">
-                      <span class="rounded-full px-2.5 py-1 text-xs font-semibold" :class="runStatusClass(run.status)">{{ statusLabel(run.status) }}</span>
-                      <p class="mt-2 text-xs text-gray-500 dark:text-dark-400">
+            <div class="divide-y divide-gray-100 dark:divide-dark-700/70">
+              <article v-for="run in runs" :key="run.id" class="px-5 py-4 hover:bg-gray-50/60 dark:hover:bg-dark-700/20">
+                <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div class="flex min-w-0 items-start gap-3">
+                    <span class="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" :class="runStatusClass(run.status)">
+                      <Icon :name="run.status === 'running' ? 'refresh' : run.status === 'completed' ? 'check' : 'exclamationTriangle'" size="sm" :class="run.status === 'running' ? 'animate-spin' : ''" />
+                    </span>
+                    <div class="min-w-0">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <p class="font-semibold text-gray-900 dark:text-white">{{ runSummaryTitle(run) }}</p>
+                        <span class="monitor-chip">{{ triggerLabel(run.trigger) }}</span>
+                        <span class="monitor-chip">{{ modeLabel(run.dry_run ? 'dry_run' : run.mode) }}</span>
+                      </div>
+                      <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">
+                        {{ formatDateTime(run.started_at) }} ·
                         {{ t('admin.upstreamPriceMonitor.history.matched', { count: run.matched_models }) }} ·
                         {{ t('admin.upstreamPriceMonitor.history.mismatched', { count: run.mismatched_models }) }}
                       </p>
-                       <p v-if="run.error" class="mt-1 max-w-[260px] break-words text-xs text-red-500">{{ localizedMonitorError(run.error) }}</p>
-                    </td>
-                    <td class="px-4 py-4 font-mono text-xs text-gray-700 dark:text-dark-200">{{ formatMoney(run.probe_cost) }}</td>
-                    <td class="px-4 py-4">
-                      <code class="rounded bg-gray-100 px-2 py-1 text-[11px] text-gray-600 dark:bg-dark-700 dark:text-dark-200">
-                        {{ shortHash(run.snapshot_hash) }}
-                      </code>
-                    </td>
-                    <td class="px-5 py-4 text-right">
-                      <div class="flex justify-end gap-2">
-                        <button v-if="canApply(run)" type="button" class="text-xs font-semibold text-primary-600 hover:text-primary-700 dark:text-primary-300" @click="requestRunAction('apply', run)">
-                          {{ t('admin.upstreamPriceMonitor.overview.apply') }}
-                        </button>
-                        <button v-if="canRollback(run)" type="button" class="text-xs font-semibold text-amber-600 hover:text-amber-700 dark:text-amber-300" @click="requestRunAction('rollback', run)">
-                          {{ t('admin.upstreamPriceMonitor.overview.rollback') }}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+                      <p v-if="run.error" class="mt-2 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{{ localizedMonitorError(run.error) }}</p>
+                    </div>
+                  </div>
+                  <div class="flex shrink-0 items-center justify-between gap-5 sm:justify-end">
+                    <div class="text-right">
+                      <p class="text-[11px] text-gray-400">{{ t('admin.upstreamPriceMonitor.history.cost') }}</p>
+                      <p class="mt-0.5 font-mono text-sm font-semibold text-gray-800 dark:text-gray-100">{{ formatMoney(run.probe_cost) }}</p>
+                    </div>
+                    <button v-if="configDraft.mode === 'review' && canApply(run)" type="button" class="btn btn-primary px-3 py-1.5 text-xs" @click="requestRunAction('apply', run)">
+                      {{ t('admin.upstreamPriceMonitor.overview.apply') }}
+                    </button>
+                    <button v-if="canRollback(run)" type="button" class="btn btn-secondary px-3 py-1.5 text-xs text-amber-700 dark:text-amber-300" @click="requestRunAction('rollback', run)">
+                      {{ t('admin.upstreamPriceMonitor.overview.rollback') }}
+                    </button>
+                  </div>
+                </div>
+              </article>
             </div>
             <p v-if="runs.length === 0" class="px-5 py-12 text-center text-sm text-gray-400">{{ t('admin.upstreamPriceMonitor.history.empty') }}</p>
             <Pagination
@@ -578,7 +568,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
@@ -606,13 +596,13 @@ import { isStepUpCancelled, useStepUp } from '@/composables/useStepUp'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { formatDateTime } from '@/utils/format'
 
-type MonitorTab = 'overview' | 'config' | 'history'
+type MonitorTab = 'overview' | 'history'
 type PendingRunAction = { type: 'apply' | 'rollback'; run: UpstreamPriceMonitorRun }
 
 const defaultConfig = (): UpstreamPriceMonitorConfig => ({
   enabled: false,
-  mode: 'auto_apply',
-  interval_minutes: 1440,
+  mode: 'observe',
+  interval_minutes: 360,
   markup: 1.2,
   display_multiplier_decimals: 3,
   account_ids: [],
@@ -625,7 +615,7 @@ const defaultConfig = (): UpstreamPriceMonitorConfig => ({
   active_probe_max_models_per_run: 19,
   active_probe_max_requests_per_model: 7,
   active_probe_run_budget_usd: 0.15,
-  active_probe_daily_budget_usd: 0.20,
+  active_probe_daily_budget_usd: 0.40,
 })
 
 const { t } = useI18n()
@@ -659,21 +649,24 @@ const modelCatalogDomesticOnly = ref(true)
 const updatingModel = ref('')
 const discoveringModels = ref(false)
 const pendingRunAction = ref<PendingRunAction | null>(null)
+const configPanelRef = ref<HTMLDetailsElement | null>(null)
 
 let loadController: AbortController | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const tabs = computed(() => [
   { key: 'overview' as const, label: t('admin.upstreamPriceMonitor.tabs.overview') },
-  { key: 'config' as const, label: t('admin.upstreamPriceMonitor.tabs.config') },
   { key: 'history' as const, label: t('admin.upstreamPriceMonitor.tabs.history') },
 ])
+const intervalOptions = computed(() => [60, 180, 360, 720, 1440].map(value => ({
+  value,
+  label: intervalLabel(value),
+})))
 const evidenceStatuses: UpstreamPriceEvidenceStatus[] = ['trusted', 'pending', 'mismatch', 'stale', 'unobservable']
 const runStatuses: UpstreamPriceRunStatus[] = ['running', 'completed', 'partial', 'failed']
 const knownStatuses = new Set(['idle', 'running', 'degraded', 'failed', 'disabled', 'completed', 'partial', ...evidenceStatuses])
-const knownModes = new Set(['observe', 'auto_apply', 'dry_run'])
+const knownModes = new Set(['observe', 'review', 'auto_apply', 'dry_run'])
 const knownTriggers = new Set(['manual', 'scheduled', 'active_probe'])
-const knownSources = new Set(['user_request', 'active_probe', 'price_page'])
 const knownReconciliationStatuses = new Set([
   'baseline', 'matched', 'no_activity', 'mismatch', 'remote_reset', 'mixed_context',
   'closed', 'open', 'external_traffic',
@@ -692,8 +685,6 @@ function configPayload(): UpstreamPriceMonitorConfig {
     ...configDraft,
     active_only: true,
     active_probe_enabled: true,
-    mode: 'auto_apply',
-    interval_minutes: 1440,
     markup: 1.2,
     account_ids: [...configDraft.account_ids].map(Number).filter(Number.isFinite).sort((a, b) => a - b),
     channel_ids: [...configDraft.channel_ids].map(Number).filter(Number.isFinite).sort((a, b) => a - b),
@@ -720,11 +711,16 @@ const coveragePercent = computed(() => {
 })
 const coverageText = computed(() => `${runtime.value?.coverage?.trusted || 0} / ${runtime.value?.coverage?.total || 0}`)
 const runtimeStatusClass = computed(() => runStatusClass(runtime.value?.status || 'disabled'))
-const currentRunCost = computed(() => {
-  if (Number.isFinite(runtime.value?.current_run_probe_cost)) return runtime.value?.current_run_probe_cost || 0
-  const currentRunID = runtime.value?.current_run_id
-  const current = currentRunID ? runs.value.find(run => run.id === currentRunID) : runs.value.find(run => run.status === 'running')
-  return current?.probe_cost || 0
+const runtimeStatusHint = computed(() => {
+  if (!configDraft.enabled) return t('admin.upstreamPriceMonitor.runtime.statusHintDisabled')
+  if (runtime.value?.status === 'running') return t('admin.upstreamPriceMonitor.runtime.statusHintRunning')
+  if (runtime.value?.status === 'failed' || runtime.value?.status === 'degraded') return t('admin.upstreamPriceMonitor.runtime.statusHintAttention')
+  return t('admin.upstreamPriceMonitor.runtime.statusHintHealthy')
+})
+const modeBannerClass = computed(() => {
+  if (configDraft.mode === 'auto_apply') return 'border-emerald-200 bg-emerald-50/70 dark:border-emerald-500/25 dark:bg-emerald-500/10'
+  if (configDraft.mode === 'review') return 'border-violet-200 bg-violet-50/70 dark:border-violet-500/25 dark:bg-violet-500/10'
+  return 'border-blue-200 bg-blue-50/70 dark:border-blue-500/25 dark:bg-blue-500/10'
 })
 const filteredEvidence = computed(() => {
   const needle = evidenceSearch.value.toLowerCase()
@@ -750,8 +746,6 @@ function assignConfig(config: UpstreamPriceMonitorConfig): void {
   Object.assign(configDraft, normalized, {
     active_only: true,
     active_probe_enabled: true,
-    mode: 'auto_apply',
-    interval_minutes: 1440,
     markup: 1.2,
     account_ids: [...(normalized.account_ids || [])],
     channel_ids: [...(normalized.channel_ids || [])],
@@ -845,15 +839,20 @@ async function refreshCurrentTab(): Promise<void> {
   refreshing.value = true
   try {
     if (activeTab.value === 'history') await refreshRuns()
-    else if (activeTab.value === 'config') {
-      if (!configDirty.value) await refreshModelCatalog()
-      await refreshOverview()
-    } else await refreshOverview()
+    else await refreshOverview()
   } catch (error) {
     appStore.showError(localizedApiError(error, t('admin.upstreamPriceMonitor.messages.loadFailed')))
   } finally {
     refreshing.value = false
   }
+}
+
+async function openConfigPanel(): Promise<void> {
+  const panel = configPanelRef.value
+  if (!panel) return
+  panel.open = true
+  await nextTick()
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 async function handleRunNow(): Promise<void> {
@@ -873,13 +872,13 @@ async function handleRunNow(): Promise<void> {
 }
 
 function validateConfig(): string {
-  if (configDraft.interval_minutes !== 1440) return t('admin.upstreamPriceMonitor.config.validationInterval')
+  if (![60, 180, 360, 720, 1440].includes(configDraft.interval_minutes)) return t('admin.upstreamPriceMonitor.config.validationInterval')
   if (configDraft.markup !== 1.2) return t('admin.upstreamPriceMonitor.config.validationMarkup')
   if (!Number.isInteger(configDraft.display_multiplier_decimals) || configDraft.display_multiplier_decimals < 0 || configDraft.display_multiplier_decimals > 6) return t('admin.upstreamPriceMonitor.config.validationDecimals')
   if (!Number.isInteger(configDraft.active_probe_max_models_per_run) || configDraft.active_probe_max_models_per_run < 1 || configDraft.active_probe_max_models_per_run > 19) return t('admin.upstreamPriceMonitor.config.validationMaxModels')
   if (!Number.isInteger(configDraft.active_probe_max_requests_per_model) || configDraft.active_probe_max_requests_per_model < 1 || configDraft.active_probe_max_requests_per_model > 7) return t('admin.upstreamPriceMonitor.config.validationMaxRequests')
   if (!Number.isFinite(configDraft.active_probe_run_budget_usd) || configDraft.active_probe_run_budget_usd <= 0 || configDraft.active_probe_run_budget_usd > 0.15) return t('admin.upstreamPriceMonitor.config.validationRunBudget')
-  if (!Number.isFinite(configDraft.active_probe_daily_budget_usd) || configDraft.active_probe_daily_budget_usd <= 0 || configDraft.active_probe_daily_budget_usd > 0.20) return t('admin.upstreamPriceMonitor.config.validationDailyBudget')
+  if (!Number.isFinite(configDraft.active_probe_daily_budget_usd) || configDraft.active_probe_daily_budget_usd <= 0 || configDraft.active_probe_daily_budget_usd > 0.40) return t('admin.upstreamPriceMonitor.config.validationDailyBudget')
   if (configDraft.active_probe_daily_budget_usd < configDraft.active_probe_run_budget_usd) return t('admin.upstreamPriceMonitor.config.validationBudgetOrder')
   if (configPayload().account_ids.length !== 1) return t('admin.upstreamPriceMonitor.config.validationSingleAccount')
   if (configDraft.enabled && configPayload().channel_ids.length === 0) return t('admin.upstreamPriceMonitor.config.validationChannels')
@@ -960,11 +959,11 @@ async function confirmRunAction(): Promise<void> {
 }
 
 function canApply(run: UpstreamPriceMonitorRun): boolean {
-  return run.status === 'completed' && Boolean(run.snapshot_hash) && !run.applied_at
+  return configDraft.mode === 'review' && run.status === 'completed' && Boolean(run.snapshot_hash) && !run.applied_at
 }
 
 function canRollback(run: UpstreamPriceMonitorRun): boolean {
-  return Boolean(run.rollback_available && run.snapshot_hash && run.applied_at)
+  return configDraft.mode !== 'observe' && Boolean(run.rollback_available && run.snapshot_hash && run.applied_at)
 }
 
 function handleHistoryFilter(): void {
@@ -995,16 +994,37 @@ function modeLabel(mode: string): string {
     : t('admin.upstreamPriceMonitor.mode.unknown')
 }
 
+function modeShortHint(mode: string): string {
+  if (mode === 'auto_apply') return t('admin.upstreamPriceMonitor.mode.shortAuto')
+  if (mode === 'review') return t('admin.upstreamPriceMonitor.mode.shortReview')
+  return t('admin.upstreamPriceMonitor.mode.shortObserve')
+}
+
+function modeLongHint(mode: string): string {
+  if (mode === 'auto_apply') return t('admin.upstreamPriceMonitor.overview.modeHintAuto')
+  if (mode === 'review') return t('admin.upstreamPriceMonitor.overview.modeHintReview')
+  return t('admin.upstreamPriceMonitor.overview.modeHintObserve')
+}
+
+function intervalLabel(minutes: number): string {
+  if (minutes === 60) return t('admin.upstreamPriceMonitor.interval.hour', { count: 1 })
+  if (minutes % 60 === 0) return t('admin.upstreamPriceMonitor.interval.hour', { count: minutes / 60 })
+  return t('admin.upstreamPriceMonitor.interval.minute', { count: minutes })
+}
+
 function triggerLabel(trigger: string): string {
   return knownTriggers.has(trigger)
     ? t(`admin.upstreamPriceMonitor.history.${trigger}`)
     : t('admin.upstreamPriceMonitor.history.unknownTrigger')
 }
 
-function sourceLabel(source: string): string {
-  return knownSources.has(source)
-    ? t(`admin.upstreamPriceMonitor.source.${source}`)
-    : t('admin.upstreamPriceMonitor.source.unknown')
+function runSummaryTitle(run: UpstreamPriceMonitorRun): string {
+  if (run.status === 'running') return t('admin.upstreamPriceMonitor.history.summaryRunning')
+  if (run.status === 'failed') return t('admin.upstreamPriceMonitor.history.summaryFailed')
+  if (run.status === 'partial') return t('admin.upstreamPriceMonitor.history.summaryPartial')
+  const applied = Number(run.summary?.applied_models || 0)
+  if (applied > 0 || run.applied_at) return t('admin.upstreamPriceMonitor.history.summaryApplied', { count: applied || run.matched_models })
+  return t('admin.upstreamPriceMonitor.history.summaryCompleted', { count: run.matched_models })
 }
 
 function runStatusClass(status: string): string {
@@ -1035,16 +1055,6 @@ function reconciliationLabel(item: UpstreamPriceEvidence): string {
   return statusLabel(item.status === 'trusted' ? 'trusted' : item.status)
 }
 
-function hasLedgerDelta(item: UpstreamPriceEvidence): boolean {
-  return item.local_delta !== null && item.local_delta !== undefined && item.remote_delta !== null && item.remote_delta !== undefined
-}
-
-function formatDelta(value?: UpstreamPriceEvidence['local_delta']): string {
-  if (!value) return '—'
-  const tokens = value.input_tokens + value.output_tokens + value.cache_creation_tokens + value.cache_read_tokens
-  return `${value.requests} req / ${tokens} tok / ${formatMoney(value.actual_cost)}`
-}
-
 function evidenceObservedPrices(item: UpstreamPriceEvidence) {
   return item.prices || {}
 }
@@ -1053,6 +1063,8 @@ interface PriceField {
   key: UpstreamPriceDimension
   label: string
   current?: number | null
+  display?: number | null
+  observed?: number | null
   suggested?: number | null
   status: UpstreamPriceDimensionStatus
 }
@@ -1073,31 +1085,70 @@ function priceFields(item: UpstreamPriceEvidence): PriceField[] {
   const current = item.current_prices || evidenceObservedPrices(item)
   const suggested = item.suggested_prices || {}
   const observed = evidenceObservedPrices(item)
+  const display = item.display_prices_current || {}
   if (item.billing_mode === 'per_request') {
     return [
-      { key: 'per_request_lte_256k', label: t('admin.upstreamPriceMonitor.overview.priceRequestLow'), current: current.per_request_lte_256k, suggested: suggested.per_request_lte_256k, status: resolvedDimensionStatus(item, 'per_request_lte_256k', observed.per_request_lte_256k) },
-      { key: 'per_request_256k_512k', label: t('admin.upstreamPriceMonitor.overview.priceRequestMedium'), current: current.per_request_256k_512k, suggested: suggested.per_request_256k_512k, status: resolvedDimensionStatus(item, 'per_request_256k_512k', observed.per_request_256k_512k) },
-      { key: 'per_request_gt_512k', label: t('admin.upstreamPriceMonitor.overview.priceRequestHigh'), current: current.per_request_gt_512k, suggested: suggested.per_request_gt_512k, status: resolvedDimensionStatus(item, 'per_request_gt_512k', observed.per_request_gt_512k) },
+      { key: 'per_request_lte_256k', label: t('admin.upstreamPriceMonitor.overview.priceRequestLow'), current: current.per_request_lte_256k, display: display.per_request_lte_256k, observed: observed.per_request_lte_256k, suggested: suggested.per_request_lte_256k, status: resolvedDimensionStatus(item, 'per_request_lte_256k', observed.per_request_lte_256k) },
+      { key: 'per_request_256k_512k', label: t('admin.upstreamPriceMonitor.overview.priceRequestMedium'), current: current.per_request_256k_512k, display: display.per_request_256k_512k, observed: observed.per_request_256k_512k, suggested: suggested.per_request_256k_512k, status: resolvedDimensionStatus(item, 'per_request_256k_512k', observed.per_request_256k_512k) },
+      { key: 'per_request_gt_512k', label: t('admin.upstreamPriceMonitor.overview.priceRequestHigh'), current: current.per_request_gt_512k, display: display.per_request_gt_512k, observed: observed.per_request_gt_512k, suggested: suggested.per_request_gt_512k, status: resolvedDimensionStatus(item, 'per_request_gt_512k', observed.per_request_gt_512k) },
     ]
   }
   return [
-    { key: 'fixed_per_request', label: t('admin.upstreamPriceMonitor.overview.priceFixedRequest'), current: current.fixed_per_request, suggested: suggested.fixed_per_request, status: resolvedDimensionStatus(item, 'fixed_per_request', observed.fixed_per_request) },
-    { key: 'input', label: t('admin.upstreamPriceMonitor.overview.priceInput'), current: current.input_per_million, suggested: suggested.input_per_million, status: resolvedDimensionStatus(item, 'input', observed.input_per_million) },
-    { key: 'output', label: t('admin.upstreamPriceMonitor.overview.priceOutput'), current: current.output_per_million, suggested: suggested.output_per_million, status: resolvedDimensionStatus(item, 'output', observed.output_per_million) },
-    { key: 'cache_write', label: t('admin.upstreamPriceMonitor.overview.priceCacheWrite'), current: current.cache_write_per_million, suggested: suggested.cache_write_per_million, status: resolvedDimensionStatus(item, 'cache_write', observed.cache_write_per_million) },
-    { key: 'cache_read', label: t('admin.upstreamPriceMonitor.overview.priceCacheRead'), current: current.cache_read_per_million, suggested: suggested.cache_read_per_million, status: resolvedDimensionStatus(item, 'cache_read', observed.cache_read_per_million) },
+    { key: 'fixed_per_request', label: t('admin.upstreamPriceMonitor.overview.priceFixedRequest'), current: current.fixed_per_request, display: display.fixed_per_request, observed: observed.fixed_per_request, suggested: suggested.fixed_per_request, status: resolvedDimensionStatus(item, 'fixed_per_request', observed.fixed_per_request) },
+    { key: 'input', label: t('admin.upstreamPriceMonitor.overview.priceInput'), current: current.input_per_million, display: display.input_per_million, observed: observed.input_per_million, suggested: suggested.input_per_million, status: resolvedDimensionStatus(item, 'input', observed.input_per_million) },
+    { key: 'output', label: t('admin.upstreamPriceMonitor.overview.priceOutput'), current: current.output_per_million, display: display.output_per_million, observed: observed.output_per_million, suggested: suggested.output_per_million, status: resolvedDimensionStatus(item, 'output', observed.output_per_million) },
+    { key: 'cache_write', label: t('admin.upstreamPriceMonitor.overview.priceCacheWrite'), current: current.cache_write_per_million, display: display.cache_write_per_million, observed: observed.cache_write_per_million, suggested: suggested.cache_write_per_million, status: resolvedDimensionStatus(item, 'cache_write', observed.cache_write_per_million) },
+    { key: 'cache_read', label: t('admin.upstreamPriceMonitor.overview.priceCacheRead'), current: current.cache_read_per_million, display: display.cache_read_per_million, observed: observed.cache_read_per_million, suggested: suggested.cache_read_per_million, status: resolvedDimensionStatus(item, 'cache_read', observed.cache_read_per_million) },
   ]
 }
 
-function dimensionStatusLabel(status: UpstreamPriceDimensionStatus): string {
-  return t(`admin.upstreamPriceMonitor.dimension.${status}`)
+function visiblePriceFields(item: UpstreamPriceEvidence): PriceField[] {
+  const populated = priceFields(item).filter(field => [field.current, field.display, field.observed, field.suggested].some(value => value !== null && value !== undefined))
+  return populated.length ? populated : priceFields(item).filter(field => field.key !== 'fixed_per_request')
 }
 
-function dimensionStatusClass(status: UpstreamPriceDimensionStatus): string {
-  if (status === 'observed') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
-  if (status === 'pending') return 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300'
-  if (status === 'failed') return 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300'
-  return 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-dark-300'
+function hasDisplayPrices(item: UpstreamPriceEvidence): boolean {
+  return visiblePriceFields(item).some(field => field.display !== null && field.display !== undefined)
+}
+
+function dimensionDotClass(status: UpstreamPriceDimensionStatus): string {
+  if (status === 'observed') return 'bg-emerald-500'
+  if (status === 'pending') return 'bg-blue-500'
+  if (status === 'failed') return 'bg-amber-500'
+  return 'bg-gray-300 dark:bg-dark-500'
+}
+
+function evidenceNeedsApply(item: UpstreamPriceEvidence): boolean {
+  return visiblePriceFields(item).some(field => priceChanged(field.current, field.suggested) || (field.display !== null && field.display !== undefined && priceChanged(field.display, field.suggested)))
+}
+
+function evidenceWasApplied(item: UpstreamPriceEvidence): boolean {
+  if (item.status !== 'trusted' || !item.observed_at) return false
+  const observedAt = Date.parse(item.observed_at)
+  if (!Number.isFinite(observedAt)) return false
+  return runs.value.some(run => {
+    if (!run.applied_at) return false
+    const startedAt = Date.parse(run.started_at)
+    const finishedAt = Date.parse(run.finished_at || run.applied_at)
+    if (!Number.isFinite(startedAt) || !Number.isFinite(finishedAt)) return false
+    return observedAt >= startedAt - 5_000 && observedAt <= finishedAt + 5 * 60_000
+  })
+}
+
+function applyStateLabel(item: UpstreamPriceEvidence): string {
+  if (item.status !== 'trusted') return t('admin.upstreamPriceMonitor.applyState.unavailable')
+  if (evidenceWasApplied(item)) return t('admin.upstreamPriceMonitor.applyState.appliedRun')
+  if (!evidenceNeedsApply(item)) return t('admin.upstreamPriceMonitor.applyState.applied')
+  if (configDraft.mode === 'observe') return t('admin.upstreamPriceMonitor.applyState.observedOnly')
+  if (configDraft.mode === 'review') return t('admin.upstreamPriceMonitor.applyState.awaitingReview')
+  return t('admin.upstreamPriceMonitor.applyState.awaitingAuto')
+}
+
+function applyStateClass(item: UpstreamPriceEvidence): string {
+  if (item.status !== 'trusted') return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-dark-200'
+  if (evidenceWasApplied(item) || !evidenceNeedsApply(item)) return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
+  if (configDraft.mode === 'observe') return 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300'
+  return 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'
 }
 
 function localizedMonitorError(value?: string | null): string {
@@ -1127,18 +1178,10 @@ function formatMoney(value?: number | null): string {
   return `$${value.toFixed(value > 0 && value < 0.01 ? 6 : 2)}`
 }
 
-function formatMultiplier(value?: number | null): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return '—'
-  return `${value.toFixed(configDraft.display_multiplier_decimals)}×`
-}
-
 function priceChanged(current?: number | null, suggested?: number | null): boolean {
-  return current !== null && current !== undefined && suggested !== null && suggested !== undefined && Math.abs(current - suggested) > 1e-12
-}
-
-function shortHash(hash?: string): string {
-  if (!hash) return t('admin.upstreamPriceMonitor.history.noHash')
-  return hash.length > 12 ? `${hash.slice(0, 12)}…` : hash
+  if (suggested === null || suggested === undefined || !Number.isFinite(suggested)) return false
+  if (current === null || current === undefined || !Number.isFinite(current)) return true
+  return Math.abs(current - suggested) > 1e-12
 }
 
 function formatTimestamp(value: string | null | undefined, kind: 'last' | 'next'): string {
@@ -1221,7 +1264,7 @@ onUnmounted(() => {
 }
 
 .monitor-stat-card {
-  @apply flex min-h-[126px] flex-col rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800;
+  @apply flex min-h-[118px] flex-col rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800;
 }
 
 .monitor-stat-label {
@@ -1234,6 +1277,22 @@ onUnmounted(() => {
 
 .monitor-chip {
   @apply inline-flex rounded-md bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-dark-700 dark:text-dark-200;
+}
+
+.price-summary-column {
+  @apply min-w-0 rounded-xl border border-gray-100 bg-gray-50/60 p-3 dark:border-dark-700 dark:bg-dark-900/30;
+}
+
+.price-summary-title {
+  @apply mb-2 text-[11px] font-bold uppercase tracking-wide text-gray-500 dark:text-dark-400;
+}
+
+.price-summary-row {
+  @apply mt-1.5 flex items-center justify-between gap-3 text-xs text-gray-500 dark:text-dark-300;
+}
+
+.price-summary-row strong {
+  @apply whitespace-nowrap font-mono font-semibold text-gray-800 dark:text-gray-100;
 }
 
 .config-toggle-row {

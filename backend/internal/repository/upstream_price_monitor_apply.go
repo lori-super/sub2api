@@ -45,15 +45,23 @@ type upstreamPriceIntervalRollback struct {
 }
 
 type upstreamPriceDisplayRollback struct {
-	ID                      int64   `json:"id"`
-	ModelMultiplier         *string `json:"model_multiplier,omitempty"`
-	PerRequestLTE256K       *string `json:"per_request_lte_256k,omitempty"`
-	PerRequest256K512K      *string `json:"per_request_256k_512k,omitempty"`
-	PerRequestGT512K        *string `json:"per_request_gt_512k,omitempty"`
-	AfterModelMultiplier    *string `json:"after_model_multiplier,omitempty"`
-	AfterPerRequestLTE256K  *string `json:"after_per_request_lte_256k,omitempty"`
-	AfterPerRequest256K512K *string `json:"after_per_request_256k_512k,omitempty"`
-	AfterPerRequestGT512K   *string `json:"after_per_request_gt_512k,omitempty"`
+	ID                          int64   `json:"id"`
+	ModelMultiplier             *string `json:"model_multiplier,omitempty"`
+	DisplayInputPrice           *string `json:"display_input_price,omitempty"`
+	DisplayOutputPrice          *string `json:"display_output_price,omitempty"`
+	DisplayCacheWritePrice      *string `json:"display_cache_write_price,omitempty"`
+	DisplayCacheReadPrice       *string `json:"display_cache_read_price,omitempty"`
+	PerRequestLTE256K           *string `json:"per_request_lte_256k,omitempty"`
+	PerRequest256K512K          *string `json:"per_request_256k_512k,omitempty"`
+	PerRequestGT512K            *string `json:"per_request_gt_512k,omitempty"`
+	AfterModelMultiplier        *string `json:"after_model_multiplier,omitempty"`
+	AfterDisplayInputPrice      *string `json:"after_display_input_price,omitempty"`
+	AfterDisplayOutputPrice     *string `json:"after_display_output_price,omitempty"`
+	AfterDisplayCacheWritePrice *string `json:"after_display_cache_write_price,omitempty"`
+	AfterDisplayCacheReadPrice  *string `json:"after_display_cache_read_price,omitempty"`
+	AfterPerRequestLTE256K      *string `json:"after_per_request_lte_256k,omitempty"`
+	AfterPerRequest256K512K     *string `json:"after_per_request_256k_512k,omitempty"`
+	AfterPerRequestGT512K       *string `json:"after_per_request_gt_512k,omitempty"`
 }
 
 type upstreamPriceRollbackSnapshot struct {
@@ -142,8 +150,12 @@ func (r *upstreamPriceMonitorRepository) ApplyRun(
 	if !currentConfigUpdatedAt.Equal(expectedConfigUpdatedAt) {
 		return service.ErrUpstreamPriceRunNotApplicable
 	}
+	if mode == string(domain.UpstreamPriceMonitorModeObserve) {
+		return service.ErrUpstreamPriceRunNotApplicable
+	}
 	if trigger == string(domain.UpstreamPriceMonitorRunTriggerScheduled) &&
-		(!enabled || mode != string(domain.UpstreamPriceMonitorModeAutoApply)) {
+		(!enabled || (mode != string(domain.UpstreamPriceMonitorModeReview) &&
+			mode != string(domain.UpstreamPriceMonitorModeAutoApply))) {
 		return service.ErrUpstreamPriceRunNotApplicable
 	}
 	var currentCatalogRevision int64
@@ -242,9 +254,14 @@ func (r *upstreamPriceMonitorRepository) ApplyRun(
 				itemMatchedChannels++
 			}
 		}
-		if itemMatchedChannels == 0 {
-			continue
+		if err := requireUpstreamModelChannelMatch(item.Model, itemMatchedChannels); err != nil {
+			return err
 		}
+		displayChanged, displayErr := applyUpstreamTokenDisplayOverrides(ctx, tx, item, &snapshot)
+		if displayErr != nil {
+			return displayErr
+		}
+		itemChanged = itemChanged || displayChanged
 		matchedChannels += itemMatchedChannels
 		if itemChanged {
 			appliedModels++
@@ -279,6 +296,14 @@ func (r *upstreamPriceMonitorRepository) ApplyRun(
 		return service.ErrUpstreamPriceRunNotApplicable
 	}
 	return tx.Commit()
+}
+
+func requireUpstreamModelChannelMatch(model string, matched int) error {
+	if matched > 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: no configured channel price row matched model %s; channel and customer display prices were not changed",
+		service.ErrUpstreamPriceRunNotApplicable, model)
 }
 
 // applyUpstreamTokenBaseIntervals keeps the normal-context interval aligned
@@ -330,6 +355,25 @@ func applyUpstreamTokenBaseIntervals(
 	}
 	if err := rows.Close(); err != nil {
 		return false, err
+	}
+	for _, item := range locked {
+		before := item.rollback
+		if input != nil && before.InputPrice == nil && item.hasInputMultiplier {
+			return false, fmt.Errorf("%w: base interval %d uses an input multiplier; convert it to an explicit price before automatic repricing",
+				service.ErrUpstreamPriceRunNotApplicable, before.ID)
+		}
+		if output != nil && before.OutputPrice == nil && item.hasOutputMultiplier {
+			return false, fmt.Errorf("%w: base interval %d uses an output multiplier; convert it to an explicit price before automatic repricing",
+				service.ErrUpstreamPriceRunNotApplicable, before.ID)
+		}
+		if cacheWrite != nil && before.CacheWritePrice == nil && item.hasCacheWriteMultiplier {
+			return false, fmt.Errorf("%w: base interval %d uses a cache-write multiplier; convert it to an explicit price before automatic repricing",
+				service.ErrUpstreamPriceRunNotApplicable, before.ID)
+		}
+		if cacheRead != nil && before.CacheReadPrice == nil && item.hasCacheReadMultiplier {
+			return false, fmt.Errorf("%w: base interval %d uses a cache-read multiplier; convert it to an explicit price before automatic repricing",
+				service.ErrUpstreamPriceRunNotApplicable, before.ID)
+		}
 	}
 	changed := false
 	for _, item := range locked {
@@ -404,6 +448,92 @@ func loadLockedUpstreamChannelPricingRows(
 		return nil, err
 	}
 	return locked, nil
+}
+
+// applyUpstreamTokenDisplayOverrides keeps the customer-facing exact selling
+// prices on the same approved snapshot as live channel billing. Official base
+// prices and every multiplier remain presentation metadata and are never
+// overwritten by a paid probe.
+func applyUpstreamTokenDisplayOverrides(
+	ctx context.Context,
+	tx *sql.Tx,
+	evidence upstreamPriceApplyEvidence,
+	snapshot *upstreamPriceRollbackSnapshot,
+) (bool, error) {
+	var before upstreamPriceDisplayRollback
+	var modelMultiplier, input, output, cacheWrite, cacheRead sql.NullString
+	var actualInput, actualOutput, actualCacheWrite, actualCacheRead sql.NullFloat64
+	var effectiveMultiplier sql.NullFloat64
+	err := tx.QueryRowContext(ctx, `SELECT d.id,d.model_multiplier::text,
+		d.display_input_per_million_override::text,d.display_output_per_million_override::text,
+		d.display_cache_write_per_million_override::text,d.display_cache_read_per_million_override::text,
+		COALESCE(d.model_multiplier,p.multiplier,s.global_multiplier)::float8,
+		COALESCE(d.display_input_per_million_override,d.official_input_per_million*
+			COALESCE(d.input_multiplier_override,d.model_multiplier,p.input_multiplier_override,p.multiplier,s.global_multiplier))::float8,
+		COALESCE(d.display_output_per_million_override,d.official_output_per_million*
+			COALESCE(d.output_multiplier_override,d.model_multiplier,p.output_multiplier_override,p.multiplier,s.global_multiplier))::float8,
+		COALESCE(d.display_cache_write_per_million_override,d.official_cache_write_per_million*
+			COALESCE(d.cache_write_multiplier_override,d.model_multiplier,p.cache_write_multiplier_override,p.multiplier,s.global_multiplier))::float8,
+		COALESCE(d.display_cache_read_per_million_override,d.official_cache_read_per_million*
+			COALESCE(d.cache_read_multiplier_override,d.model_multiplier,p.cache_read_multiplier_override,p.multiplier,s.global_multiplier))::float8
+		FROM display_model_prices d
+		JOIN display_pricing_providers p ON p.provider=d.provider
+		CROSS JOIN display_pricing_settings s
+		WHERE d.platform='openai' AND d.billing_mode='token' AND LOWER(d.model_name)=LOWER($1)
+		FOR UPDATE OF d`, evidence.Model).Scan(&before.ID, &modelMultiplier, &input, &output, &cacheWrite, &cacheRead,
+		&effectiveMultiplier, &actualInput, &actualOutput, &actualCacheWrite, &actualCacheRead)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("%w: no token display row matched model %s",
+			service.ErrUpstreamPriceRunNotApplicable, evidence.Model)
+	}
+	if err != nil {
+		return false, err
+	}
+	before.ModelMultiplier = nullStringPtr(modelMultiplier)
+	before.DisplayInputPrice = nullStringPtr(input)
+	before.DisplayOutputPrice = nullStringPtr(output)
+	before.DisplayCacheWritePrice = nullStringPtr(cacheWrite)
+	before.DisplayCacheReadPrice = nullStringPtr(cacheRead)
+	actual := domain.UpstreamPriceVector{
+		InputPerMillion: nullFloat64Ptr(actualInput), OutputPerMillion: nullFloat64Ptr(actualOutput),
+		CacheWritePerMillion: nullFloat64Ptr(actualCacheWrite), CacheReadPerMillion: nullFloat64Ptr(actualCacheRead),
+	}
+	if !sameTokenPriceSnapshot(evidence.DisplayPricesCurrent, actual) {
+		return false, fmt.Errorf("%w: customer display prices changed for model %s",
+			service.ErrUpstreamPriceSnapshotMismatch, evidence.Model)
+	}
+	if err := assertDisplayMultiplierSnapshot(evidence.Model, evidence.DisplayMultiplierCurrent,
+		nullFloat64Ptr(effectiveMultiplier)); err != nil {
+		return false, err
+	}
+	nextInput := displayPerMillionDecimalString(evidence.Suggested.InputPerMillion)
+	nextOutput := displayPerMillionDecimalString(evidence.Suggested.OutputPerMillion)
+	nextCacheWrite := displayPerMillionDecimalString(evidence.Suggested.CacheWritePerMillion)
+	nextCacheRead := displayPerMillionDecimalString(evidence.Suggested.CacheReadPerMillion)
+	result, err := tx.ExecContext(ctx, `UPDATE display_model_prices SET
+		display_input_per_million_override=COALESCE($2::numeric,display_input_per_million_override),
+		display_output_per_million_override=COALESCE($3::numeric,display_output_per_million_override),
+		display_cache_write_per_million_override=COALESCE($4::numeric,display_cache_write_per_million_override),
+		display_cache_read_per_million_override=COALESCE($5::numeric,display_cache_read_per_million_override),
+		updated_at=NOW() WHERE id=$1 AND (
+			($2::numeric IS NOT NULL AND display_input_per_million_override IS DISTINCT FROM $2::numeric) OR
+			($3::numeric IS NOT NULL AND display_output_per_million_override IS DISTINCT FROM $3::numeric) OR
+			($4::numeric IS NOT NULL AND display_cache_write_per_million_override IS DISTINCT FROM $4::numeric) OR
+			($5::numeric IS NOT NULL AND display_cache_read_per_million_override IS DISTINCT FROM $5::numeric))`,
+		before.ID, nextInput, nextOutput, nextCacheWrite, nextCacheRead)
+	if err != nil {
+		return false, err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return false, nil
+	}
+	before.AfterModelMultiplier = before.ModelMultiplier
+	before.AfterDisplayInputPrice = numericAfter(before.DisplayInputPrice, nextInput)
+	before.AfterDisplayOutputPrice = numericAfter(before.DisplayOutputPrice, nextOutput)
+	before.AfterDisplayCacheWritePrice = numericAfter(before.DisplayCacheWritePrice, nextCacheWrite)
+	before.AfterDisplayCacheReadPrice = numericAfter(before.DisplayCacheReadPrice, nextCacheRead)
+	snapshot.Displays = append(snapshot.Displays, before)
+	return true, nil
 }
 
 func assertTokenChannelSnapshot(
@@ -601,6 +731,13 @@ func (r *upstreamPriceMonitorRepository) RollbackRun(ctx context.Context, runID 
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(742193847561)`); err != nil {
 		return err
 	}
+	var currentMode string
+	if err := tx.QueryRowContext(ctx, `SELECT mode FROM upstream_price_monitor_config WHERE id=1 FOR UPDATE`).Scan(&currentMode); err != nil {
+		return err
+	}
+	if currentMode == string(domain.UpstreamPriceMonitorModeObserve) {
+		return service.ErrUpstreamPriceRunNotApplicable
+	}
 	var storedHash string
 	var appliedAt sql.NullTime
 	var rollbackAvailable bool
@@ -628,11 +765,11 @@ func (r *upstreamPriceMonitorRepository) RollbackRun(ctx context.Context, runID 
 	if err := json.Unmarshal(raw, &snapshot); err != nil {
 		return err
 	}
-	// Display pricing and per-request billing are a separate public-price-page
-	// subsystem. Refuse legacy mixed snapshots instead of letting a token-price
-	// rollback mutate either subsystem.
-	if len(snapshot.Displays) > 0 || rollbackSnapshotChangesPerRequest(snapshot) {
-		return fmt.Errorf("%w: rollback snapshot contains display or per-request pricing",
+	// Per-request pricing remains an independent page-driven subsystem. Token
+	// exact display overrides, however, are intentionally rolled back together
+	// with the live token channel prices from the same transaction.
+	if rollbackSnapshotChangesPerRequest(snapshot) || rollbackSnapshotChangesLegacyDisplay(snapshot) {
+		return fmt.Errorf("%w: rollback snapshot contains unsupported per-request or multiplier pricing",
 			service.ErrUpstreamPriceRunNotApplicable)
 	}
 	for _, row := range snapshot.Channels {
@@ -670,6 +807,28 @@ func (r *upstreamPriceMonitorRepository) RollbackRun(ctx context.Context, runID 
 			return service.ErrUpstreamPriceRunNotApplicable
 		}
 	}
+	for _, row := range snapshot.Displays {
+		result, err := tx.ExecContext(ctx, `UPDATE display_model_prices SET
+			display_input_per_million_override=$2::numeric,
+			display_output_per_million_override=$3::numeric,
+			display_cache_write_per_million_override=$4::numeric,
+			display_cache_read_per_million_override=$5::numeric,updated_at=NOW()
+			WHERE id=$1 AND platform='openai' AND billing_mode='token'
+			  AND model_multiplier IS NOT DISTINCT FROM $6::numeric
+			  AND display_input_per_million_override IS NOT DISTINCT FROM $7::numeric
+			  AND display_output_per_million_override IS NOT DISTINCT FROM $8::numeric
+			  AND display_cache_write_per_million_override IS NOT DISTINCT FROM $9::numeric
+			  AND display_cache_read_per_million_override IS NOT DISTINCT FROM $10::numeric`,
+			row.ID, row.DisplayInputPrice, row.DisplayOutputPrice, row.DisplayCacheWritePrice,
+			row.DisplayCacheReadPrice, row.AfterModelMultiplier, row.AfterDisplayInputPrice,
+			row.AfterDisplayOutputPrice, row.AfterDisplayCacheWritePrice, row.AfterDisplayCacheReadPrice)
+		if err != nil {
+			return err
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 {
+			return service.ErrUpstreamPriceRunNotApplicable
+		}
+	}
 	rolledBackAt := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := tx.ExecContext(ctx, `UPDATE upstream_price_monitor_runs SET rollback_available=FALSE,
 		summary=jsonb_set(summary,'{rolled_back_at}',to_jsonb($2::text),true)
@@ -697,6 +856,18 @@ func rollbackSnapshotChangesPerRequest(snapshot upstreamPriceRollbackSnapshot) b
 	return false
 }
 
+func rollbackSnapshotChangesLegacyDisplay(snapshot upstreamPriceRollbackSnapshot) bool {
+	for _, row := range snapshot.Displays {
+		if !sameStringPtr(row.ModelMultiplier, row.AfterModelMultiplier) ||
+			!sameStringPtr(row.PerRequestLTE256K, row.AfterPerRequestLTE256K) ||
+			!sameStringPtr(row.PerRequest256K512K, row.AfterPerRequest256K512K) ||
+			!sameStringPtr(row.PerRequestGT512K, row.AfterPerRequestGT512K) {
+			return true
+		}
+	}
+	return false
+}
+
 func sameStringPtr(a, b *string) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
@@ -711,7 +882,7 @@ func loadTrustedApplyEvidence(
 	accountIDs []int64,
 ) ([]upstreamPriceApplyEvidence, []upstreamPriceApplySkippedModel, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT account_id,model_name,billing_mode,status,source,context_key,
-		prices,current_prices,suggested_prices
+		prices,current_prices,suggested_prices,display_prices_current,display_multiplier_current
 		FROM upstream_price_monitor_evidence
 		WHERE run_id=$1 AND source='active_probe' AND billing_mode='token' AND status='trusted'
 		  AND context_key NOT LIKE '%-sample-%'
@@ -733,9 +904,10 @@ func loadTrustedApplyEvidence(
 	for rows.Next() {
 		var accountID int64
 		var model, billingMode, status, source, contextKey string
-		var measuredRaw, currentRaw, suggestedRaw []byte
+		var measuredRaw, currentRaw, suggestedRaw, displayCurrentRaw []byte
+		var displayMultiplierCurrent sql.NullFloat64
 		if err := rows.Scan(&accountID, &model, &billingMode, &status, &source, &contextKey,
-			&measuredRaw, &currentRaw, &suggestedRaw); err != nil {
+			&measuredRaw, &currentRaw, &suggestedRaw, &displayCurrentRaw, &displayMultiplierCurrent); err != nil {
 			return nil, nil, err
 		}
 		if status != string(domain.UpstreamPriceEvidenceStatusTrusted) ||
@@ -747,7 +919,7 @@ func loadTrustedApplyEvidence(
 		if _, selected := expectedAccounts[accountID]; !selected {
 			continue
 		}
-		var measured, current, persistedSuggested domain.UpstreamPriceVector
+		var measured, current, persistedSuggested, displayCurrent domain.UpstreamPriceVector
 		if err := json.Unmarshal(measuredRaw, &measured); err != nil {
 			return nil, nil, err
 		}
@@ -756,6 +928,11 @@ func loadTrustedApplyEvidence(
 		}
 		if err := json.Unmarshal(suggestedRaw, &persistedSuggested); err != nil {
 			return nil, nil, err
+		}
+		if len(displayCurrentRaw) > 0 {
+			if err := json.Unmarshal(displayCurrentRaw, &displayCurrent); err != nil {
+				return nil, nil, err
+			}
 		}
 		if err := rejectUnrepresentableActivePriceVector(model, "measured", measured); err != nil {
 			return nil, nil, err
@@ -780,7 +957,11 @@ func loadTrustedApplyEvidence(
 				service.ErrUpstreamPriceSnapshotMismatch, model)
 		}
 		item := upstreamPriceApplyEvidence{
-			Model: model, Current: current, Suggested: suggested, BillingMode: billingMode,
+			Model: model, Current: current, Suggested: suggested, DisplayPricesCurrent: displayCurrent,
+			BillingMode: billingMode,
+		}
+		if displayMultiplierCurrent.Valid {
+			item.DisplayMultiplierCurrent = &displayMultiplierCurrent.Float64
 		}
 		if err := validateUpstreamPriceApplyEvidence([]upstreamPriceApplyEvidence{item}, false); err != nil {
 			return nil, nil, err
@@ -792,7 +973,9 @@ func loadTrustedApplyEvidence(
 		}
 		if previous, exists := candidate.byAccount[accountID]; exists {
 			merged, compatible := mergeCompatibleUpstreamPriceVectors(previous.Suggested, suggested)
-			if !compatible || !sameTokenPriceSnapshot(previous.Current, current) {
+			if !compatible || !sameTokenPriceSnapshot(previous.Current, current) ||
+				!sameTokenPriceSnapshot(previous.DisplayPricesCurrent, displayCurrent) ||
+				!sameFloatPtr(previous.DisplayMultiplierCurrent, item.DisplayMultiplierCurrent) {
 				return nil, nil, fmt.Errorf("%w: duplicate trusted evidence disagrees for account %d model %s",
 					service.ErrUpstreamPriceSnapshotMismatch, accountID, model)
 			}
@@ -809,7 +992,8 @@ func loadTrustedApplyEvidence(
 			continue
 		}
 		vectors := make([]domain.UpstreamPriceVector, 0, len(accountIDs))
-		var current domain.UpstreamPriceVector
+		var current, displayCurrent domain.UpstreamPriceVector
+		var displayMultiplierCurrent *float64
 		complete := true
 		for index, accountID := range accountIDs {
 			value, exists := candidate.byAccount[accountID]
@@ -820,7 +1004,11 @@ func loadTrustedApplyEvidence(
 			vectors = append(vectors, value.Suggested)
 			if index == 0 {
 				current = value.Current
-			} else if !sameTokenPriceSnapshot(current, value.Current) {
+				displayCurrent = value.DisplayPricesCurrent
+				displayMultiplierCurrent = value.DisplayMultiplierCurrent
+			} else if !sameTokenPriceSnapshot(current, value.Current) ||
+				!sameTokenPriceSnapshot(displayCurrent, value.DisplayPricesCurrent) ||
+				!sameFloatPtr(displayMultiplierCurrent, value.DisplayMultiplierCurrent) {
 				return nil, nil, fmt.Errorf("%w: sampled current prices disagree across accounts for model %s",
 					service.ErrUpstreamPriceSnapshotMismatch, candidate.model)
 			}
@@ -833,7 +1021,9 @@ func loadTrustedApplyEvidence(
 			continue
 		}
 		out = append(out, upstreamPriceApplyEvidence{
-			Model: candidate.model, Current: current, Suggested: merged, BillingMode: service.DisplayBillingModeToken,
+			Model: candidate.model, Current: current, Suggested: merged,
+			DisplayPricesCurrent: displayCurrent, DisplayMultiplierCurrent: displayMultiplierCurrent,
+			BillingMode: service.DisplayBillingModeToken,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1025,6 +1215,13 @@ func decimalString(value *float64) any {
 		return nil
 	}
 	return decimal.NewFromFloat(*value).Round(12).String()
+}
+
+func displayPerMillionDecimalString(value *float64) any {
+	if value == nil {
+		return nil
+	}
+	return decimal.NewFromFloat(*value).Round(8).StringFixed(8)
 }
 
 func numericAfter(before *string, next any) *string {

@@ -93,7 +93,9 @@ func (r *UpstreamPriceMonitorRunner) runIfDue() {
 	}
 	_, err = r.monitor.RunOnce(ctx, UpstreamPriceRunOptions{
 		Trigger: domain.UpstreamPriceMonitorRunTriggerScheduled,
-		DryRun:  cfg.Mode != domain.UpstreamPriceMonitorModeAutoApply,
+		// Review produces the same frozen, actionable plan as auto_apply but
+		// waits for an explicit administrator Apply action.
+		DryRun: cfg.Mode != domain.UpstreamPriceMonitorModeAutoApply,
 	})
 	if err != nil && !errors.Is(err, ErrUpstreamPriceMonitorRunConflict) {
 		slog.Warn("upstream_price_monitor_run_failed", "error", err)
@@ -124,32 +126,17 @@ func (r *UpstreamPriceMonitorRunner) runPerRequestIfDue() {
 	result, perRequestErr := r.monitor.SyncPerRequestPrices(ctx)
 	cancel()
 
-	var tokenDisplayErr error
-	var tokenDisplayResult *DisplayUpstreamTokenPriceSyncResult
-	if tokenFetcher, ok := r.monitor.pricePage.(UpstreamTokenPricePageFetcher); ok && r.monitor.displayPricing != nil {
-		tokenCtx, tokenCancel := context.WithTimeout(r.ctx, upstreamPerRequestPriceSyncTimeout)
-		tokenDisplayResult, tokenDisplayErr = r.monitor.displayPricing.SyncUpstreamTokenDisplayPrices(tokenCtx, tokenFetcher)
-		tokenCancel()
-	}
 	nextInterval := upstreamPerRequestPriceSyncInterval
-	if perRequestErr != nil || tokenDisplayErr != nil {
+	if perRequestErr != nil {
 		nextInterval = upstreamPerRequestPriceRetryInterval
 		if perRequestErr != nil {
 			slog.Warn("upstream_per_request_price_sync_failed", "error", perRequestErr)
-		}
-		if tokenDisplayErr != nil {
-			slog.Warn("upstream_token_display_price_sync_failed", "error", tokenDisplayErr)
 		}
 	} else if result != nil && result.ChangedModels > 0 {
 		slog.Info("upstream_per_request_price_sync_applied",
 			"models", result.Models,
 			"changed_models", result.ChangedModels,
 			"changed_channel_rows", result.ChangedChannelRows)
-	}
-	if tokenDisplayResult != nil && tokenDisplayResult.ChangedModels > 0 {
-		slog.Info("upstream_token_display_price_sync_applied",
-			"models", tokenDisplayResult.UpdatedModels,
-			"changed_models", tokenDisplayResult.ChangedModels)
 	}
 	r.perRequestMu.Lock()
 	r.perRequestNextRun = now().Add(nextInterval)
