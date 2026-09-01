@@ -82,5 +82,6 @@ func TestUpstreamPriceMonitorModesAndFrequencyMigrationPreservesEnabledState(t *
 	require.Contains(t, sql, "alter column interval_minutes set default 360")
 	require.Contains(t, sql, "active_probe_daily_budget_usd <= 0.4000000000")
 	require.Contains(t, sql, "where id = 1 and interval_minutes = 1440")
+	require.Contains(t, sql, "where interval_minutes < 60")
 	require.NotContains(t, sql, "set enabled")
 }

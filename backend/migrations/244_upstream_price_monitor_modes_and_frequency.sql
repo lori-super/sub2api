@@ -19,6 +19,14 @@ SET interval_minutes = 360,
     updated_at = NOW()
 WHERE id = 1 AND interval_minutes = 1440;
 
+-- Older installations could configure the former 5-minute lower bound.
+-- Clamp those rows before replacing the constraint so the forward migration
+-- remains valid without changing whether monitoring is enabled.
+UPDATE upstream_price_monitor_config
+SET interval_minutes = 60,
+    updated_at = NOW()
+WHERE interval_minutes < 60;
+
 ALTER TABLE upstream_price_monitor_config
     DROP CONSTRAINT IF EXISTS upstream_price_monitor_config_mode_check,
     DROP CONSTRAINT IF EXISTS upstream_price_monitor_config_interval_check,
