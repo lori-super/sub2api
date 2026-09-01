@@ -110,6 +110,7 @@
                 :currency="section.currency"
                 :billing-mode="section.billingMode"
                 :models="section.models"
+                :primary-multiplier="section.primaryMultiplier"
                 :section-id="sectionAnchor(section)"
               />
             </div>
@@ -171,6 +172,7 @@ interface PricingSection {
   currency: DisplayPriceCurrency
   billingMode: BillingMode
   models: DisplayPriceModel[]
+  primaryMultiplier: number | null
 }
 
 interface BillingRegion {
@@ -282,7 +284,8 @@ const filteredSections = computed<PricingSection[]>(() => {
         logoUrl: provider.logo_url || '',
         currency,
         billingMode,
-        models
+        models,
+        primaryMultiplier: provider.effective_multiplier ?? null
       })
     }
   }
