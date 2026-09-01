@@ -254,14 +254,14 @@ func (r *upstreamPriceMonitorRepository) ApplyRun(
 				itemMatchedChannels++
 			}
 		}
+		if err := requireUpstreamModelChannelMatch(item.Model, itemMatchedChannels); err != nil {
+			return err
+		}
 		displayChanged, displayErr := applyUpstreamTokenDisplayOverrides(ctx, tx, item, &snapshot)
 		if displayErr != nil {
 			return displayErr
 		}
 		itemChanged = itemChanged || displayChanged
-		if itemMatchedChannels == 0 {
-			continue
-		}
 		matchedChannels += itemMatchedChannels
 		if itemChanged {
 			appliedModels++
@@ -296,6 +296,14 @@ func (r *upstreamPriceMonitorRepository) ApplyRun(
 		return service.ErrUpstreamPriceRunNotApplicable
 	}
 	return tx.Commit()
+}
+
+func requireUpstreamModelChannelMatch(model string, matched int) error {
+	if matched > 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: no configured channel price row matched model %s; channel and customer display prices were not changed",
+		service.ErrUpstreamPriceRunNotApplicable, model)
 }
 
 // applyUpstreamTokenBaseIntervals keeps the normal-context interval aligned
@@ -347,6 +355,25 @@ func applyUpstreamTokenBaseIntervals(
 	}
 	if err := rows.Close(); err != nil {
 		return false, err
+	}
+	for _, item := range locked {
+		before := item.rollback
+		if input != nil && before.InputPrice == nil && item.hasInputMultiplier {
+			return false, fmt.Errorf("%w: base interval %d uses an input multiplier; convert it to an explicit price before automatic repricing",
+				service.ErrUpstreamPriceRunNotApplicable, before.ID)
+		}
+		if output != nil && before.OutputPrice == nil && item.hasOutputMultiplier {
+			return false, fmt.Errorf("%w: base interval %d uses an output multiplier; convert it to an explicit price before automatic repricing",
+				service.ErrUpstreamPriceRunNotApplicable, before.ID)
+		}
+		if cacheWrite != nil && before.CacheWritePrice == nil && item.hasCacheWriteMultiplier {
+			return false, fmt.Errorf("%w: base interval %d uses a cache-write multiplier; convert it to an explicit price before automatic repricing",
+				service.ErrUpstreamPriceRunNotApplicable, before.ID)
+		}
+		if cacheRead != nil && before.CacheReadPrice == nil && item.hasCacheReadMultiplier {
+			return false, fmt.Errorf("%w: base interval %d uses a cache-read multiplier; convert it to an explicit price before automatic repricing",
+				service.ErrUpstreamPriceRunNotApplicable, before.ID)
+		}
 	}
 	changed := false
 	for _, item := range locked {
