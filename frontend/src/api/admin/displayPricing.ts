@@ -7,6 +7,12 @@ export interface DisplayPricingSettings {
   updated_at: string
 }
 
+export interface UpstreamTokenDisplayPriceSyncResult {
+  source_models: number
+  matched_models: number
+  updated_models: number
+}
+
 export interface DisplayPricingProvider {
   provider: string
   display_name: string
@@ -15,6 +21,10 @@ export interface DisplayPricingProvider {
   image_note: string
   currency: DisplayPriceCurrency
   multiplier: number | null
+  input_multiplier_override: number | null
+  output_multiplier_override: number | null
+  cache_write_multiplier_override: number | null
+  cache_read_multiplier_override: number | null
   sort_order: number
   logo_key: string
   logo_url: string
@@ -46,6 +56,14 @@ export interface DisplayPricingModelInput {
   official_price_source_url?: string
   official_price_synced_at?: string | null
   model_multiplier: number | null
+  input_multiplier_override: number | null
+  output_multiplier_override: number | null
+  cache_write_multiplier_override: number | null
+  cache_read_multiplier_override: number | null
+  display_input_per_million_override: number | null
+  display_output_per_million_override: number | null
+  display_cache_write_per_million_override: number | null
+  display_cache_read_per_million_override: number | null
   per_request_lte_256k: number | null
   per_request_256k_512k_override: number | null
   per_request_gt_512k_override: number | null
@@ -168,6 +186,13 @@ export async function listModels(): Promise<DisplayPricingModel[]> {
   return data.items
 }
 
+export async function syncUpstreamTokenDisplayPrices(): Promise<UpstreamTokenDisplayPriceSyncResult> {
+  const { data } = await apiClient.post<UpstreamTokenDisplayPriceSyncResult>(
+    '/admin/display-pricing/upstream-token-sync'
+  )
+  return data
+}
+
 /**
  * The customer-facing per-request catalogue always uses a fixed three-tier
  * curve: base / base x 1.5 / base x 2. Older records may still contain manual
@@ -234,6 +259,7 @@ const displayPricingAPI = {
   updateProvider,
   deleteProvider,
   listModels,
+  syncUpstreamTokenDisplayPrices,
   createModel,
   updateModel,
   deleteModel,

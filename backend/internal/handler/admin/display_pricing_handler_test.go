@@ -163,7 +163,7 @@ func TestDisplayPricingProviderCRUDHandlers(t *testing.T) {
 
 	repo.providers["deepseek"] = service.DisplayPricingProvider{Provider: "deepseek", DisplayName: "DeepSeek", Currency: "CNY"}
 	createModel := httptest.NewRecorder()
-	modelBody := `{"platform":"openai","model_name":"deepseek-custom-model","provider":"deepseek","billing_mode":"token","currency":"CNY","model_note":"  Launch note  ","official_price_source":"herohao_aggregate","official_price_source_url":"https://sub2.herohao.top/pricing/api/pricing","official_price_synced_at":"2026-08-30T10:00:00Z"}`
+	modelBody := `{"platform":"openai","model_name":"deepseek-custom-model","provider":"deepseek","billing_mode":"token","currency":"CNY","model_note":"  Launch note  ","official_price_source":"herohao_aggregate","official_price_source_url":"https://sub2.herohao.top/pricing/api/pricing","official_price_synced_at":"2026-08-30T10:00:00Z","input_multiplier_override":0.12,"cache_read_multiplier_override":0.36,"display_cache_write_per_million_override":0.2352}`
 	modelReq := httptest.NewRequest(http.MethodPost, "/models", strings.NewReader(modelBody))
 	modelReq.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(createModel, modelReq)
@@ -171,6 +171,9 @@ func TestDisplayPricingProviderCRUDHandlers(t *testing.T) {
 	require.Contains(t, createModel.Body.String(), `"model_note":"Launch note"`)
 	require.Contains(t, createModel.Body.String(), `"official_price_source":"herohao_aggregate"`)
 	require.Contains(t, createModel.Body.String(), `"official_price_synced_at":"2026-08-30T10:00:00Z"`)
+	require.Contains(t, createModel.Body.String(), `"input_multiplier_override":0.12`)
+	require.Contains(t, createModel.Body.String(), `"cache_read_multiplier_override":0.36`)
+	require.Contains(t, createModel.Body.String(), `"display_cache_write_per_million_override":0.2352`)
 
 	repo.models = []service.DisplayModelPrice{{Provider: "custom"}, {Provider: "custom"}}
 	remove := httptest.NewRecorder()

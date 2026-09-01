@@ -13,6 +13,7 @@ type DisplayPricingHandler struct {
 	service           *service.DisplayPricingService
 	plazaService      *service.ModelPlazaService
 	officialPriceSync *service.OfficialPriceSyncService
+	upstreamTokenPage service.UpstreamTokenPricePageFetcher
 }
 
 func NewDisplayPricingHandler(displayService *service.DisplayPricingService, plazaService *service.ModelPlazaService) *DisplayPricingHandler {
@@ -27,6 +28,7 @@ func NewDisplayPricingHandlerWithOfficialPriceFetcher(
 	return &DisplayPricingHandler{
 		service: displayService, plazaService: plazaService,
 		officialPriceSync: service.NewOfficialPriceSyncService(displayService, fetcher),
+		upstreamTokenPage: service.NewX5M5XTokenPricePageFetcher(),
 	}
 }
 
@@ -35,28 +37,36 @@ type updateDisplayPricingSettingsRequest struct {
 }
 
 type createDisplayProviderRequest struct {
-	Provider       string   `json:"provider" binding:"required"`
-	DisplayName    string   `json:"display_name" binding:"required"`
-	ProviderNote   string   `json:"provider_note"`
-	PerRequestNote string   `json:"per_request_note"`
-	ImageNote      string   `json:"image_note"`
-	Currency       string   `json:"currency" binding:"required,oneof=CNY USD"`
-	Multiplier     *float64 `json:"multiplier"`
-	LogoKey        string   `json:"logo_key"`
-	LogoURL        string   `json:"logo_url"`
-	SortOrder      int      `json:"sort_order"`
+	Provider                     string   `json:"provider" binding:"required"`
+	DisplayName                  string   `json:"display_name" binding:"required"`
+	ProviderNote                 string   `json:"provider_note"`
+	PerRequestNote               string   `json:"per_request_note"`
+	ImageNote                    string   `json:"image_note"`
+	Currency                     string   `json:"currency" binding:"required,oneof=CNY USD"`
+	Multiplier                   *float64 `json:"multiplier"`
+	InputMultiplierOverride      *float64 `json:"input_multiplier_override"`
+	OutputMultiplierOverride     *float64 `json:"output_multiplier_override"`
+	CacheWriteMultiplierOverride *float64 `json:"cache_write_multiplier_override"`
+	CacheReadMultiplierOverride  *float64 `json:"cache_read_multiplier_override"`
+	LogoKey                      string   `json:"logo_key"`
+	LogoURL                      string   `json:"logo_url"`
+	SortOrder                    int      `json:"sort_order"`
 }
 
 type updateDisplayProviderRequest struct {
-	DisplayName    string   `json:"display_name" binding:"required"`
-	ProviderNote   string   `json:"provider_note"`
-	PerRequestNote string   `json:"per_request_note"`
-	ImageNote      string   `json:"image_note"`
-	Currency       string   `json:"currency" binding:"required,oneof=CNY USD"`
-	Multiplier     *float64 `json:"multiplier"`
-	LogoKey        string   `json:"logo_key"`
-	LogoURL        string   `json:"logo_url"`
-	SortOrder      int      `json:"sort_order"`
+	DisplayName                  string   `json:"display_name" binding:"required"`
+	ProviderNote                 string   `json:"provider_note"`
+	PerRequestNote               string   `json:"per_request_note"`
+	ImageNote                    string   `json:"image_note"`
+	Currency                     string   `json:"currency" binding:"required,oneof=CNY USD"`
+	Multiplier                   *float64 `json:"multiplier"`
+	InputMultiplierOverride      *float64 `json:"input_multiplier_override"`
+	OutputMultiplierOverride     *float64 `json:"output_multiplier_override"`
+	CacheWriteMultiplierOverride *float64 `json:"cache_write_multiplier_override"`
+	CacheReadMultiplierOverride  *float64 `json:"cache_read_multiplier_override"`
+	LogoKey                      string   `json:"logo_key"`
+	LogoURL                      string   `json:"logo_url"`
+	SortOrder                    int      `json:"sort_order"`
 }
 
 type displayModelPriceRequest struct {
@@ -69,14 +79,22 @@ type displayModelPriceRequest struct {
 	SortOrder   int    `json:"sort_order"`
 	ModelNote   string `json:"model_note"`
 
-	OfficialInputPerMillion      *float64   `json:"official_input_per_million"`
-	OfficialOutputPerMillion     *float64   `json:"official_output_per_million"`
-	OfficialCacheWritePerMillion *float64   `json:"official_cache_write_per_million"`
-	OfficialCacheReadPerMillion  *float64   `json:"official_cache_read_per_million"`
-	OfficialPriceSource          string     `json:"official_price_source"`
-	OfficialPriceSourceURL       string     `json:"official_price_source_url"`
-	OfficialPriceSyncedAt        *time.Time `json:"official_price_synced_at"`
-	ModelMultiplier              *float64   `json:"model_multiplier"`
+	OfficialInputPerMillion             *float64   `json:"official_input_per_million"`
+	OfficialOutputPerMillion            *float64   `json:"official_output_per_million"`
+	OfficialCacheWritePerMillion        *float64   `json:"official_cache_write_per_million"`
+	OfficialCacheReadPerMillion         *float64   `json:"official_cache_read_per_million"`
+	OfficialPriceSource                 string     `json:"official_price_source"`
+	OfficialPriceSourceURL              string     `json:"official_price_source_url"`
+	OfficialPriceSyncedAt               *time.Time `json:"official_price_synced_at"`
+	ModelMultiplier                     *float64   `json:"model_multiplier"`
+	InputMultiplierOverride             *float64   `json:"input_multiplier_override"`
+	OutputMultiplierOverride            *float64   `json:"output_multiplier_override"`
+	CacheWriteMultiplierOverride        *float64   `json:"cache_write_multiplier_override"`
+	CacheReadMultiplierOverride         *float64   `json:"cache_read_multiplier_override"`
+	DisplayInputPerMillionOverride      *float64   `json:"display_input_per_million_override"`
+	DisplayOutputPerMillionOverride     *float64   `json:"display_output_per_million_override"`
+	DisplayCacheWritePerMillionOverride *float64   `json:"display_cache_write_per_million_override"`
+	DisplayCacheReadPerMillionOverride  *float64   `json:"display_cache_read_per_million_override"`
 
 	PerRequestLTE256K          *float64                    `json:"per_request_lte_256k"`
 	PerRequest256K512KOverride *float64                    `json:"per_request_256k_512k_override"`
@@ -125,7 +143,10 @@ func (h *DisplayPricingHandler) CreateProvider(c *gin.Context) {
 	item, err := h.service.CreateProvider(c.Request.Context(), service.DisplayPricingProvider{
 		Provider: req.Provider, DisplayName: req.DisplayName, ProviderNote: req.ProviderNote,
 		PerRequestNote: req.PerRequestNote, ImageNote: req.ImageNote, Currency: req.Currency,
-		Multiplier: req.Multiplier, LogoKey: req.LogoKey, LogoURL: req.LogoURL, SortOrder: req.SortOrder,
+		Multiplier:              req.Multiplier,
+		InputMultiplierOverride: req.InputMultiplierOverride, OutputMultiplierOverride: req.OutputMultiplierOverride,
+		CacheWriteMultiplierOverride: req.CacheWriteMultiplierOverride, CacheReadMultiplierOverride: req.CacheReadMultiplierOverride,
+		LogoKey: req.LogoKey, LogoURL: req.LogoURL, SortOrder: req.SortOrder,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -143,6 +164,8 @@ func (h *DisplayPricingHandler) UpdateProvider(c *gin.Context) {
 	item, err := h.service.UpdateProvider(c.Request.Context(), c.Param("provider"), service.DisplayPricingProvider{
 		DisplayName: req.DisplayName, ProviderNote: req.ProviderNote,
 		PerRequestNote: req.PerRequestNote, ImageNote: req.ImageNote, Currency: req.Currency, Multiplier: req.Multiplier,
+		InputMultiplierOverride: req.InputMultiplierOverride, OutputMultiplierOverride: req.OutputMultiplierOverride,
+		CacheWriteMultiplierOverride: req.CacheWriteMultiplierOverride, CacheReadMultiplierOverride: req.CacheReadMultiplierOverride,
 		LogoKey: req.LogoKey, LogoURL: req.LogoURL, SortOrder: req.SortOrder,
 	})
 	if err != nil {
@@ -260,6 +283,15 @@ func (h *DisplayPricingHandler) ApplyOfficialPrices(c *gin.Context) {
 	response.Success(c, result)
 }
 
+func (h *DisplayPricingHandler) SyncUpstreamTokenDisplayPrices(c *gin.Context) {
+	result, err := h.service.SyncUpstreamTokenDisplayPrices(c.Request.Context(), h.upstreamTokenPage)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 func modelFromDisplayRequest(req displayModelPriceRequest) service.DisplayModelPrice {
 	enabled := true
 	if req.Enabled != nil {
@@ -271,8 +303,13 @@ func modelFromDisplayRequest(req displayModelPriceRequest) service.DisplayModelP
 		OfficialInputPerMillion: req.OfficialInputPerMillion, OfficialOutputPerMillion: req.OfficialOutputPerMillion,
 		OfficialCacheWritePerMillion: req.OfficialCacheWritePerMillion, OfficialCacheReadPerMillion: req.OfficialCacheReadPerMillion,
 		OfficialPriceSource: req.OfficialPriceSource, OfficialPriceSourceURL: req.OfficialPriceSourceURL,
-		OfficialPriceSyncedAt: req.OfficialPriceSyncedAt,
-		ModelMultiplier:       req.ModelMultiplier, PerRequestLTE256K: req.PerRequestLTE256K,
+		OfficialPriceSyncedAt:   req.OfficialPriceSyncedAt,
+		ModelMultiplier:         req.ModelMultiplier,
+		InputMultiplierOverride: req.InputMultiplierOverride, OutputMultiplierOverride: req.OutputMultiplierOverride,
+		CacheWriteMultiplierOverride: req.CacheWriteMultiplierOverride, CacheReadMultiplierOverride: req.CacheReadMultiplierOverride,
+		DisplayInputPerMillionOverride: req.DisplayInputPerMillionOverride, DisplayOutputPerMillionOverride: req.DisplayOutputPerMillionOverride,
+		DisplayCacheWritePerMillionOverride: req.DisplayCacheWritePerMillionOverride, DisplayCacheReadPerMillionOverride: req.DisplayCacheReadPerMillionOverride,
+		PerRequestLTE256K:          req.PerRequestLTE256K,
 		PerRequest256K512KOverride: req.PerRequest256K512KOverride, PerRequestGT512KOverride: req.PerRequestGT512KOverride,
 		ImagePrices: req.ImagePrices,
 	}
@@ -282,7 +319,10 @@ func displayProviderResponse(p *service.DisplayPricingProvider) gin.H {
 	return gin.H{
 		"provider": p.Provider, "display_name": p.DisplayName, "provider_note": p.ProviderNote,
 		"per_request_note": p.PerRequestNote, "image_note": p.ImageNote, "currency": p.Currency,
-		"multiplier": p.Multiplier, "logo_key": p.LogoKey, "logo_url": p.LogoURL,
+		"multiplier":                p.Multiplier,
+		"input_multiplier_override": p.InputMultiplierOverride, "output_multiplier_override": p.OutputMultiplierOverride,
+		"cache_write_multiplier_override": p.CacheWriteMultiplierOverride, "cache_read_multiplier_override": p.CacheReadMultiplierOverride,
+		"logo_key": p.LogoKey, "logo_url": p.LogoURL,
 		"sort_order": p.SortOrder, "updated_at": p.UpdatedAt,
 	}
 }
@@ -294,8 +334,13 @@ func displayModelAdminResponse(p *service.DisplayModelPrice) gin.H {
 		"official_input_per_million": p.OfficialInputPerMillion, "official_output_per_million": p.OfficialOutputPerMillion,
 		"official_cache_write_per_million": p.OfficialCacheWritePerMillion, "official_cache_read_per_million": p.OfficialCacheReadPerMillion,
 		"official_price_source": p.OfficialPriceSource, "official_price_source_url": p.OfficialPriceSourceURL,
-		"official_price_synced_at": p.OfficialPriceSyncedAt,
-		"model_multiplier":         p.ModelMultiplier, "per_request_lte_256k": p.PerRequestLTE256K,
+		"official_price_synced_at":  p.OfficialPriceSyncedAt,
+		"model_multiplier":          p.ModelMultiplier,
+		"input_multiplier_override": p.InputMultiplierOverride, "output_multiplier_override": p.OutputMultiplierOverride,
+		"cache_write_multiplier_override": p.CacheWriteMultiplierOverride, "cache_read_multiplier_override": p.CacheReadMultiplierOverride,
+		"display_input_per_million_override": p.DisplayInputPerMillionOverride, "display_output_per_million_override": p.DisplayOutputPerMillionOverride,
+		"display_cache_write_per_million_override": p.DisplayCacheWritePerMillionOverride, "display_cache_read_per_million_override": p.DisplayCacheReadPerMillionOverride,
+		"per_request_lte_256k":           p.PerRequestLTE256K,
 		"per_request_256k_512k_override": p.PerRequest256K512KOverride, "per_request_gt_512k_override": p.PerRequestGT512KOverride,
 		"image_prices": p.ImagePrices, "created_at": p.CreatedAt, "updated_at": p.UpdatedAt,
 	}

@@ -14,11 +14,27 @@
               {{ t('admin.displayPricing.description') }}
             </p>
           </div>
-          <div class="flex flex-wrap gap-2">
-            <RouterLink to="/model-prices" class="btn btn-secondary">
-              <Icon name="eye" size="sm" />
-              {{ t('admin.displayPricing.preview') }}
-            </RouterLink>
+          <div class="flex max-w-xl flex-col items-stretch gap-2 sm:items-end">
+            <div class="flex flex-wrap gap-2 sm:justify-end">
+              <button
+                type="button"
+                class="btn btn-primary"
+                :disabled="syncingUpstreamPrices"
+                :title="t('admin.displayPricing.upstreamSync.hint')"
+                data-testid="upstream-token-sync"
+                @click="syncUpstreamPrices"
+              >
+                <Icon name="refresh" size="sm" :class="syncingUpstreamPrices ? 'animate-spin' : ''" />
+                {{ syncingUpstreamPrices ? t('admin.displayPricing.upstreamSync.syncing') : t('admin.displayPricing.upstreamSync.button') }}
+              </button>
+              <RouterLink to="/model-prices" class="btn btn-secondary">
+                <Icon name="eye" size="sm" />
+                {{ t('admin.displayPricing.preview') }}
+              </RouterLink>
+            </div>
+            <p class="text-left text-[11px] leading-5 text-gray-500 dark:text-dark-400 sm:text-right">
+              {{ t('admin.displayPricing.upstreamSync.hint') }}
+            </p>
           </div>
         </div>
         <div class="mt-4 flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200">
@@ -137,6 +153,9 @@
                   <span class="provider-chip">{{ provider.currency }}</span>
                   <span class="provider-chip">
                     {{ t('admin.displayPricing.providers.multiplierValue', { value: provider.multiplier ?? 1 }) }}
+                  </span>
+                  <span v-if="hasDimensionOverrides(provider)" class="provider-chip text-primary-600 dark:text-primary-300">
+                    {{ t('admin.displayPricing.providers.dimensionOverrides') }}
                   </span>
                   <span class="provider-chip">#{{ provider.sort_order }}</span>
                 </div>
@@ -324,6 +343,27 @@
             <span class="field-label">{{ t('admin.displayPricing.providers.multiplier') }}</span>
             <input v-model.number="providerForm.multiplier" type="number" min="0.01" step="0.01" class="input mt-1.5 font-mono" placeholder="1" />
           </label>
+          <fieldset class="rounded-xl border border-gray-200 p-3 dark:border-dark-700 sm:col-span-2">
+            <legend class="px-1 text-xs font-bold text-gray-700 dark:text-dark-200">
+              {{ t('admin.displayPricing.dimensionOverrides.title') }}
+            </legend>
+            <p class="mb-3 text-xs leading-5 text-gray-500 dark:text-dark-400">
+              {{ t('admin.displayPricing.dimensionOverrides.providerHint') }}
+            </p>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <label v-for="field in multiplierOverrideFields" :key="field.key" class="form-field">
+                <span class="field-label">{{ t(field.label) }}</span>
+                <input
+                  v-model.number="providerForm[field.key]"
+                  type="number"
+                  min="0.000001"
+                  step="any"
+                  class="input mt-1.5 font-mono"
+                  :placeholder="t('admin.displayPricing.dimensionOverrides.inheritProviderUnified')"
+                />
+              </label>
+            </div>
+          </fieldset>
           <label class="form-field">
             <span class="field-label">{{ t('admin.displayPricing.sortOrder') }}</span>
             <input v-model.number="providerForm.sort_order" type="number" step="1" class="input mt-1.5 font-mono" />
@@ -401,6 +441,44 @@
             <span class="field-label">{{ t('admin.displayPricing.editor.modelMultiplier') }}</span>
             <input v-model.number="form.model_multiplier" type="number" min="0.01" step="0.01" :placeholder="t('admin.displayPricing.editor.inheritMultiplier')" class="input mt-1.5 font-mono" />
           </label>
+          <fieldset class="rounded-xl border border-gray-200 p-3 dark:border-dark-700">
+            <legend class="px-1 text-xs font-bold text-gray-700 dark:text-dark-200">
+              {{ t('admin.displayPricing.dimensionOverrides.title') }}
+            </legend>
+            <p class="mb-3 text-xs leading-5 text-gray-500 dark:text-dark-400">
+              {{ t('admin.displayPricing.dimensionOverrides.modelHint') }}
+            </p>
+            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <label v-for="field in multiplierOverrideFields" :key="field.key" class="form-field">
+                <span class="field-label">{{ t(field.label) }}</span>
+                <input
+                  v-model.number="form[field.key]"
+                  type="number"
+                  min="0.000001"
+                  step="any"
+                  class="input mt-1.5 font-mono"
+                  :placeholder="t('admin.displayPricing.dimensionOverrides.inheritModelRule')"
+                />
+              </label>
+            </div>
+          </fieldset>
+          <fieldset class="rounded-xl border border-blue-200 bg-blue-50/40 p-3 dark:border-blue-500/20 dark:bg-blue-500/5">
+            <legend class="px-1 text-xs font-bold text-blue-800 dark:text-blue-200">
+              {{ t('admin.displayPricing.priceOverrides.title') }}
+            </legend>
+            <p class="mb-3 text-xs leading-5 text-gray-500 dark:text-dark-400">
+              {{ t('admin.displayPricing.priceOverrides.hint') }}
+            </p>
+            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <PriceInput
+                v-for="field in displayPriceOverrideFields"
+                :key="field.key"
+                v-model="form[field.key]"
+                :label="t(field.label)"
+                :currency="form.currency"
+              />
+            </div>
+          </fieldset>
         </section>
 
         <section v-else-if="form.billing_mode === 'per_request'" class="form-section">
@@ -536,6 +614,7 @@ const activePanel = ref<'configuration' | 'official'>('configuration')
 const loading = ref(true)
 const savingProvider = ref(false)
 const savingModel = ref(false)
+const syncingUpstreamPrices = ref(false)
 const providerDrafts = ref<DisplayPricingProvider[]>([])
 const models = ref<DisplayPricingModel[]>([])
 const discoveredModels = ref<DiscoveredDisplayModel[]>([])
@@ -561,6 +640,10 @@ function emptyProviderForm(): DisplayPricingProviderCreateInput {
     image_note: '',
     currency: 'USD',
     multiplier: null,
+    input_multiplier_override: null,
+    output_multiplier_override: null,
+    cache_write_multiplier_override: null,
+    cache_read_multiplier_override: null,
     sort_order: 0,
     logo_key: '',
     logo_url: ''
@@ -568,6 +651,28 @@ function emptyProviderForm(): DisplayPricingProviderCreateInput {
 }
 
 const providerForm = reactive<DisplayPricingProviderCreateInput>(emptyProviderForm())
+type MultiplierOverrideKey =
+  | 'input_multiplier_override'
+  | 'output_multiplier_override'
+  | 'cache_write_multiplier_override'
+  | 'cache_read_multiplier_override'
+const multiplierOverrideFields: ReadonlyArray<{ key: MultiplierOverrideKey; label: string }> = [
+  { key: 'input_multiplier_override', label: 'modelPlaza.table.input' },
+  { key: 'output_multiplier_override', label: 'modelPlaza.table.output' },
+  { key: 'cache_write_multiplier_override', label: 'modelPlaza.table.cacheWrite' },
+  { key: 'cache_read_multiplier_override', label: 'modelPlaza.table.cacheRead' }
+]
+type DisplayPriceOverrideKey =
+  | 'display_input_per_million_override'
+  | 'display_output_per_million_override'
+  | 'display_cache_write_per_million_override'
+  | 'display_cache_read_per_million_override'
+const displayPriceOverrideFields: ReadonlyArray<{ key: DisplayPriceOverrideKey; label: string }> = [
+  { key: 'display_input_per_million_override', label: 'modelPlaza.table.input' },
+  { key: 'display_output_per_million_override', label: 'modelPlaza.table.output' },
+  { key: 'display_cache_write_per_million_override', label: 'modelPlaza.table.cacheWrite' },
+  { key: 'display_cache_read_per_million_override', label: 'modelPlaza.table.cacheRead' }
+]
 const builtInLogoOptions = [
   'openai',
   'anthropic',
@@ -599,6 +704,14 @@ function emptyForm(): DisplayPricingModelInput {
     official_cache_write_per_million: null,
     official_cache_read_per_million: null,
     model_multiplier: null,
+    input_multiplier_override: null,
+    output_multiplier_override: null,
+    cache_write_multiplier_override: null,
+    cache_read_multiplier_override: null,
+    display_input_per_million_override: null,
+    display_output_per_million_override: null,
+    display_cache_write_per_million_override: null,
+    display_cache_read_per_million_override: null,
     per_request_lte_256k: null,
     per_request_256k_512k_override: null,
     per_request_gt_512k_override: null,
@@ -647,6 +760,24 @@ async function loadData(): Promise<void> {
   }
 }
 
+async function syncUpstreamPrices(): Promise<void> {
+  if (syncingUpstreamPrices.value) return
+  syncingUpstreamPrices.value = true
+  try {
+    const result = await adminAPI.displayPricing.syncUpstreamTokenDisplayPrices()
+    await loadData()
+    notifyDisplayPricingUpdated()
+    appStore.showSuccess(t('admin.displayPricing.upstreamSync.success', {
+      updated: result.updated_models,
+      source: result.source_models
+    }))
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, t('admin.displayPricing.upstreamSync.failed')))
+  } finally {
+    syncingUpstreamPrices.value = false
+  }
+}
+
 function openProviderCreate(): void {
   editingProviderKey.value = ''
   Object.assign(providerForm, emptyProviderForm())
@@ -663,6 +794,10 @@ function openProviderEdit(provider: DisplayPricingProvider): void {
     image_note: provider.image_note || '',
     currency: provider.currency,
     multiplier: provider.multiplier,
+    input_multiplier_override: provider.input_multiplier_override,
+    output_multiplier_override: provider.output_multiplier_override,
+    cache_write_multiplier_override: provider.cache_write_multiplier_override,
+    cache_read_multiplier_override: provider.cache_read_multiplier_override,
     sort_order: provider.sort_order,
     logo_key: provider.logo_key || provider.provider,
     logo_url: provider.logo_url || ''
@@ -685,6 +820,10 @@ async function saveProvider(): Promise<void> {
       image_note: providerForm.image_note.trim(),
       currency: providerForm.currency,
       multiplier: nullableNumber(providerForm.multiplier),
+      input_multiplier_override: nullableNumber(providerForm.input_multiplier_override),
+      output_multiplier_override: nullableNumber(providerForm.output_multiplier_override),
+      cache_write_multiplier_override: nullableNumber(providerForm.cache_write_multiplier_override),
+      cache_read_multiplier_override: nullableNumber(providerForm.cache_read_multiplier_override),
       sort_order: Number(providerForm.sort_order) || 0,
       logo_key: providerForm.logo_key.trim(),
       logo_url: providerForm.logo_url.trim()
@@ -782,6 +921,14 @@ function normalizedPayload(): DisplayPricingModelInput {
     official_price_source_url: isToken ? form.official_price_source_url : undefined,
     official_price_synced_at: isToken ? form.official_price_synced_at : null,
     model_multiplier: isPerRequest ? null : nullableNumber(form.model_multiplier),
+    input_multiplier_override: isToken ? nullableNumber(form.input_multiplier_override) : null,
+    output_multiplier_override: isToken ? nullableNumber(form.output_multiplier_override) : null,
+    cache_write_multiplier_override: isToken ? nullableNumber(form.cache_write_multiplier_override) : null,
+    cache_read_multiplier_override: isToken ? nullableNumber(form.cache_read_multiplier_override) : null,
+    display_input_per_million_override: isToken ? nullableNumber(form.display_input_per_million_override) : null,
+    display_output_per_million_override: isToken ? nullableNumber(form.display_output_per_million_override) : null,
+    display_cache_write_per_million_override: isToken ? nullableNumber(form.display_cache_write_per_million_override) : null,
+    display_cache_read_per_million_override: isToken ? nullableNumber(form.display_cache_read_per_million_override) : null,
     per_request_lte_256k: isPerRequest ? nullableNumber(form.per_request_lte_256k) : null,
     per_request_256k_512k_override: null,
     per_request_gt_512k_override: null,
@@ -878,6 +1025,10 @@ function modeLabel(mode: string): string {
 
 function pricingSummary(model: DisplayPricingModel): string {
   if (model.billing_mode === 'token') {
+    const priceOverrides = describePriceOverrides(model)
+    if (priceOverrides) return t('admin.displayPricing.models.tokenPriceOverrideSummary', { overrides: priceOverrides })
+    const overrides = describeDimensionOverrides(model)
+    if (overrides) return t('admin.displayPricing.models.tokenDimensionSummary', { overrides })
     return model.model_multiplier == null
       ? t('admin.displayPricing.models.tokenInheritedSummary')
       : t('admin.displayPricing.models.tokenFixedSummary', { multiplier: model.model_multiplier })
@@ -886,6 +1037,24 @@ function pricingSummary(model: DisplayPricingModel): string {
     return t('admin.displayPricing.models.perRequestSummary', { price: model.per_request_lte_256k ?? '-' })
   }
   return t('admin.displayPricing.models.imageSummary', { count: model.image_prices?.length ?? 0 })
+}
+
+function describePriceOverrides(model: Pick<DisplayPricingModel, DisplayPriceOverrideKey>): string {
+  return displayPriceOverrideFields
+    .filter(({ key }) => model[key] != null)
+    .map(({ key, label }) => `${t(label)} ${model[key]}`)
+    .join(' / ')
+}
+
+function hasDimensionOverrides(value: Pick<DisplayPricingProvider | DisplayPricingModel, MultiplierOverrideKey>): boolean {
+  return multiplierOverrideFields.some(({ key }) => value[key] != null)
+}
+
+function describeDimensionOverrides(value: Pick<DisplayPricingProvider | DisplayPricingModel, MultiplierOverrideKey>): string {
+  return multiplierOverrideFields
+    .filter(({ key }) => value[key] != null)
+    .map(({ key, label }) => `${t(label)} ×${value[key]}`)
+    .join(' / ')
 }
 
 onMounted(() => void loadData())
