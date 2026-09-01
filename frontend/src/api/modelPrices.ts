@@ -11,6 +11,14 @@ export interface DisplayTokenPrices {
   cache_read_per_million: number | null
 }
 
+/** The multiplier that was actually used for each token billing dimension. */
+export interface DisplayTokenMultipliers {
+  input_per_million: number | null
+  output_per_million: number | null
+  cache_write_per_million: number | null
+  cache_read_per_million: number | null
+}
+
 export interface DisplayPerRequestPrices {
   lte_256k: number | null
   from_256k_to_512k: number | null
@@ -35,6 +43,13 @@ export interface DisplayPriceModel {
   official_prices: DisplayTokenPrices | null
   model_multiplier: number | null
   effective_multiplier: number | null
+  /**
+   * Per-dimension effective multipliers. This is authoritative when present;
+   * effective_multiplier is retained for uniform and legacy configurations.
+   */
+  effective_multipliers?: DisplayTokenMultipliers | null
+  /** Explicit final catalogue prices, before falling back to official price × multiplier. */
+  display_price_overrides?: DisplayTokenPrices | null
   /** Final catalogue prices per 1M tokens. */
   display_prices: DisplayTokenPrices | null
   /** Final three-tier per-request prices; no multiplier is exposed. */
@@ -59,6 +74,7 @@ export interface DisplayPriceProvider {
   logo_url: string
   configured_multiplier: number | null
   effective_multiplier: number | null
+  effective_multipliers?: DisplayTokenMultipliers | null
   models: DisplayPriceModel[]
 }
 

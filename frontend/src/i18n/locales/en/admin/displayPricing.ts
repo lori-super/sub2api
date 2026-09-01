@@ -37,6 +37,7 @@ export default {
       imageNotePlaceholder: 'Optional note shown only below this provider\'s image-pricing section',
       multiplier: 'Provider multiplier factor',
       multiplierValue: 'Factor ×{value}',
+      dimensionOverrides: 'Per-dimension rates',
       logoKey: 'Built-in logo',
       logoAuto: 'Match provider key automatically',
       logoUrl: 'Custom logo URL',
@@ -67,6 +68,8 @@ export default {
       tokenSummary: 'Official price × {multiplier}',
       tokenFixedSummary: 'Official price × fixed {multiplier}',
       tokenInheritedSummary: 'Official price × provider multiplier',
+      tokenDimensionSummary: 'Per-dimension: {overrides}',
+      tokenPriceOverrideSummary: 'Final price overrides: {overrides}',
       perRequestSummary: 'First tier {price}; next tiers are fixed at ×1.5 / ×2',
       imageSummary: '{count} image tiers'
     },
@@ -74,7 +77,7 @@ export default {
       createTitle: 'Add Display Pricing',
       editTitle: 'Edit Display Pricing',
       officialPrices: 'Official base prices (per 1M tokens)',
-      tokenFormula: 'Customer display price = official base price × effective multiplier. Normal models use the provider multiplier; exceptional models use a fixed multiplier.',
+      tokenFormula: 'Our price uses an explicit final-price override first; otherwise it is the official base price × the effective multiplier for that dimension.',
       modelMultiplier: 'Fixed display multiplier',
       inheritMultiplier: 'Leave blank to follow the provider multiplier',
       perRequestPrices: 'Three-tier per-request prices',
@@ -87,6 +90,17 @@ export default {
       addTier: 'Add tier',
       specLabel: 'Specification',
       pricePerImage: 'Base price per image'
+    },
+    dimensionOverrides: {
+      title: 'Advanced: per-dimension multiplier overrides',
+      providerHint: 'Use only when input, output, or cache dimensions have different selling multipliers. Leave blank to inherit the provider multiplier above.',
+      modelHint: 'Model dimension overrides have the highest priority and suit exceptional prices such as cache reads. Leave blank to inherit the model or provider rule.',
+      inheritProviderUnified: 'Inherit provider multiplier',
+      inheritModelRule: 'Inherit parent rule'
+    },
+    priceOverrides: {
+      title: 'Advanced: final price overrides (per 1M tokens)',
+      hint: 'Use only when official base price × multiplier cannot represent the upstream price. These values override every multiplier; leave blank for normal multiplier calculation.'
     },
     discovered: {
       title: 'Choose a live model',

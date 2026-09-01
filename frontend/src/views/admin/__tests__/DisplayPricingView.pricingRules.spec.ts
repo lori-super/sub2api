@@ -26,4 +26,32 @@ describe('DisplayPricingView pricing rules', () => {
   it('shows the backend error returned by provider and model saves', () => {
     expect(source).toContain("extractApiErrorMessage(error, t('admin.displayPricing.saveFailed'))")
   })
+
+  it('supports optional provider and model overrides for all token dimensions', () => {
+    for (const field of [
+      'input_multiplier_override',
+      'output_multiplier_override',
+      'cache_write_multiplier_override',
+      'cache_read_multiplier_override'
+    ]) {
+      expect(source).toContain(`v-model.number="providerForm[field.key]"`)
+      expect(source).toContain(`${field}: null`)
+      expect(source).toContain(`${field}: isToken ? nullableNumber(form.${field}) : null`)
+    }
+    expect(source).toContain("admin.displayPricing.dimensionOverrides.modelHint")
+  })
+
+  it('supports model final display-price overrides when a multiplier formula is insufficient', () => {
+    for (const field of [
+      'display_input_per_million_override',
+      'display_output_per_million_override',
+      'display_cache_write_per_million_override',
+      'display_cache_read_per_million_override'
+    ]) {
+      expect(source).toContain(`${field}: null`)
+      expect(source).toContain(`${field}: isToken ? nullableNumber(form.${field}) : null`)
+    }
+    expect(source).toContain('v-for="field in displayPriceOverrideFields"')
+    expect(source).toContain("admin.displayPricing.priceOverrides.hint")
+  })
 })

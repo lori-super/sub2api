@@ -683,6 +683,7 @@ export default {
       basePrice: 'Base price',
       sitePrice: 'Our price',
       displayMultiplier: 'Display multiplier',
+      dimensionPricing: 'Per-dimension',
       unavailable: 'No display price',
       requestUnit: 'request',
       cacheWriteShort: 'W',
