@@ -42,7 +42,10 @@
             <th class="px-3 py-3 text-center">{{ t('modelPlaza.table.output') }}</th>
             <th class="px-3 py-3 text-center">{{ t('modelPlaza.table.cacheWrite') }}</th>
             <th class="px-3 py-3 text-center">{{ t('modelPlaza.table.cacheRead') }}</th>
-            <th class="px-5 py-3 text-center">{{ t('modelPlaza.table.displayMultiplier') }}</th>
+            <th class="px-5 py-3 text-center">
+              <span class="block">{{ t('modelPlaza.table.displayMultiplier') }}</span>
+              <span class="font-normal normal-case opacity-70">{{ t('modelPlaza.table.siteOfficialRatio') }}</span>
+            </th>
           </template>
 
           <template v-else-if="billingMode === BILLING_MODE_PER_REQUEST">
@@ -104,13 +107,6 @@
                   <span>{{ t('modelPlaza.table.sitePrice') }}</span>
                   <strong>{{ formatPrice(model.display_prices?.input_per_million) }}</strong>
                 </span>
-                <span
-                  v-if="showDimensionMultiplier(model, 'input_per_million')"
-                  class="dimension-multiplier"
-                  data-testid="dimension-multiplier"
-                >
-                  ×{{ formatMultiplier(dimensionMultiplier(model, 'input_per_million')!) }}
-                </span>
               </div>
             </td>
             <td class="price-cell">
@@ -122,13 +118,6 @@
                 <span class="site-price" data-testid="site-price">
                   <span>{{ t('modelPlaza.table.sitePrice') }}</span>
                   <strong>{{ formatPrice(model.display_prices?.output_per_million) }}</strong>
-                </span>
-                <span
-                  v-if="showDimensionMultiplier(model, 'output_per_million')"
-                  class="dimension-multiplier"
-                  data-testid="dimension-multiplier"
-                >
-                  ×{{ formatMultiplier(dimensionMultiplier(model, 'output_per_million')!) }}
                 </span>
               </div>
             </td>
@@ -142,13 +131,6 @@
                   <span>{{ t('modelPlaza.table.sitePrice') }}</span>
                   <strong>{{ formatPrice(model.display_prices?.cache_write_per_million) }}</strong>
                 </span>
-                <span
-                  v-if="showDimensionMultiplier(model, 'cache_write_per_million')"
-                  class="dimension-multiplier"
-                  data-testid="dimension-multiplier"
-                >
-                  ×{{ formatMultiplier(dimensionMultiplier(model, 'cache_write_per_million')!) }}
-                </span>
               </div>
             </td>
             <td class="price-cell">
@@ -161,29 +143,15 @@
                   <span>{{ t('modelPlaza.table.sitePrice') }}</span>
                   <strong>{{ formatPrice(model.display_prices?.cache_read_per_million) }}</strong>
                 </span>
-                <span
-                  v-if="showDimensionMultiplier(model, 'cache_read_per_million')"
-                  class="dimension-multiplier"
-                  data-testid="dimension-multiplier"
-                >
-                  ×{{ formatMultiplier(dimensionMultiplier(model, 'cache_read_per_million')!) }}
-                </span>
               </div>
             </td>
             <td class="px-5 py-3.5 text-center">
               <span
-                v-if="uniformMultiplier(model) != null"
+                v-if="multiplierRangeLabel(model)"
                 data-testid="multiplier-badge"
                 class="inline-flex min-w-[64px] justify-center rounded-md border border-[#c7eee5] bg-[#effbf8] px-2.5 py-1 font-mono text-xs font-bold text-[#07866f] dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-300"
               >
-                ×{{ formatMultiplier(uniformMultiplier(model)!) }}
-              </span>
-              <span
-                v-else-if="hasMixedMultipliers(model)"
-                data-testid="mixed-multiplier-badge"
-                class="inline-flex min-w-[64px] justify-center rounded-md border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-bold text-violet-700 dark:border-violet-500/25 dark:bg-violet-500/10 dark:text-violet-300"
-              >
-                {{ t('modelPlaza.table.dimensionPricing') }}
+                {{ multiplierRangeLabel(model) }}
               </span>
               <span v-else class="text-gray-400 dark:text-dark-500">-</span>
             </td>
@@ -220,12 +188,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
-import type {
-  DisplayPriceCurrency,
-  DisplayPriceModel,
-  DisplayTokenMultipliers,
-  DisplayTokenPrices
-} from '@/api/modelPrices'
+import type { DisplayPriceCurrency, DisplayPriceModel, DisplayTokenPrices } from '@/api/modelPrices'
 import type { BillingMode } from '@/constants/channel'
 import {
   BILLING_MODE_IMAGE,
@@ -239,6 +202,7 @@ const props = defineProps<{
   platform: string
   billingMode: BillingMode
   currency: DisplayPriceCurrency
+  primaryMultiplier?: number | null
 }>()
 
 const { t } = useI18n()
@@ -272,7 +236,7 @@ function formatMultiplier(value: number): string {
   return value.toFixed(3).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1')
 }
 
-type TokenDimension = keyof DisplayTokenMultipliers & keyof DisplayTokenPrices
+type TokenDimension = keyof DisplayTokenPrices
 const tokenDimensions: TokenDimension[] = [
   'input_per_million',
   'output_per_million',
@@ -280,42 +244,26 @@ const tokenDimensions: TokenDimension[] = [
   'cache_read_per_million'
 ]
 
-function dimensionMultiplier(model: DisplayPriceModel, dimension: TokenDimension): number | null {
-  const value = model.effective_multipliers?.[dimension]
-  return value == null ? model.effective_multiplier : value
-}
-
-function showDimensionMultiplier(model: DisplayPriceModel, dimension: TokenDimension): boolean {
-  return model.official_prices?.[dimension] != null
-    && model.display_prices?.[dimension] != null
-    && dimensionMultiplier(model, dimension) != null
-}
-
-function hasUnratioedDisplayPrice(model: DisplayPriceModel): boolean {
-  return tokenDimensions.some(
-    (dimension) => model.display_prices?.[dimension] != null && model.official_prices?.[dimension] == null
-  )
-}
-
-function pricedDimensionMultipliers(model: DisplayPriceModel): number[] {
+function pricedDimensionRatios(model: DisplayPriceModel): number[] {
   return tokenDimensions.flatMap((dimension) => {
-    if (model.official_prices?.[dimension] == null || model.display_prices?.[dimension] == null) return []
-    const value = dimensionMultiplier(model, dimension)
-    return value == null ? [] : [value]
+    const official = model.official_prices?.[dimension]
+    const site = model.display_prices?.[dimension]
+    if (official == null || official <= 0 || site == null) return []
+    const ratio = site / official
+    return Number.isFinite(ratio) && ratio >= 0 ? [ratio] : []
   })
 }
 
-function uniformMultiplier(model: DisplayPriceModel): number | null {
-  if (hasUnratioedDisplayPrice(model)) return null
-  const values = pricedDimensionMultipliers(model)
-  if (values.length === 0) return model.effective_multiplier
-  const [first] = values
-  return values.every((value) => Math.abs(value - first) < 1e-12) ? first : null
-}
-
-function hasMixedMultipliers(model: DisplayPriceModel): boolean {
-  const values = pricedDimensionMultipliers(model)
-  return hasUnratioedDisplayPrice(model) || (values.length > 1 && uniformMultiplier(model) == null)
+function multiplierRangeLabel(model: DisplayPriceModel): string | null {
+  const values = pricedDimensionRatios(model)
+  if (values.length === 0) {
+    const fallback = model.model_multiplier ?? props.primaryMultiplier ?? model.effective_multiplier
+    return fallback == null ? null : `${formatMultiplier(fallback)}×`
+  }
+  const minimum = Math.min(...values)
+  const maximum = Math.max(...values)
+  if (Math.abs(maximum - minimum) < 1e-6) return `${formatMultiplier((minimum + maximum) / 2)}×`
+  return `${formatMultiplier(minimum)}–${formatMultiplier(maximum)}×`
 }
 
 function imagePrice(model: DisplayPriceModel, label: string): number | null {
@@ -355,10 +303,6 @@ function imageBasePrice(model: DisplayPriceModel, label: string): number | null 
 
 .site-price strong {
   @apply font-mono text-sm font-bold text-[#315bd6] dark:text-blue-300;
-}
-
-.dimension-multiplier {
-  @apply inline-flex rounded-md bg-[#eef3ff] px-1.5 py-0.5 font-mono text-[10px] font-bold text-[#315bd6] dark:bg-blue-500/10 dark:text-blue-300;
 }
 
 .site-only-price {
