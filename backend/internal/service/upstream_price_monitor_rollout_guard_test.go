@@ -16,6 +16,7 @@ type upstreamPriceAutoApplyRepository struct {
 	catalog          []domain.UpstreamPriceModelCatalogEntry
 	created          *domain.UpstreamPriceMonitorRun
 	finished         *domain.UpstreamPriceMonitorRun
+	frozenEvidence   []domain.UpstreamPriceEvidence
 	freezeChannelIDs []int64
 	applyCalls       int
 	rollbackCalls    int
@@ -72,6 +73,9 @@ func (r *upstreamPriceAutoApplyRepository) FreezeEvidenceApplySnapshot(
 	_ int,
 ) ([]domain.UpstreamPriceEvidence, error) {
 	r.freezeChannelIDs = append([]int64(nil), channelIDs...)
+	if r.frozenEvidence != nil {
+		return append([]domain.UpstreamPriceEvidence(nil), r.frozenEvidence...), nil
+	}
 	return []domain.UpstreamPriceEvidence{{
 		ID: 1, RunID: 77, AccountID: 7, ModelName: "MiniMax-M3",
 		BillingMode: DisplayBillingModeToken, Status: domain.UpstreamPriceEvidenceStatusTrusted,
@@ -276,6 +280,61 @@ func TestUpstreamPriceMonitorScheduledAutoApplyInvalidatesPricingCache(t *testin
 	require.Equal(t, 1, repo.applyCalls)
 	require.NotNil(t, run.AppliedAt)
 	require.Equal(t, 1, invalidator.calls)
+}
+
+func TestUpstreamPriceMonitorRunProbeCostExcludesRecoveredBaselineEvidence(t *testing.T) {
+	cfg := testAutoApplyConfig()
+	cfg.Mode = domain.UpstreamPriceMonitorModeReview
+	const actualProbeCost = 0.00012345
+	repo := &upstreamPriceAutoApplyRepository{
+		activeProbeTestRepository: &activeProbeTestRepository{},
+		config:                    &cfg,
+		frozenEvidence: []domain.UpstreamPriceEvidence{
+			{
+				ID: 1, RunID: 77, AccountID: 7, ModelName: "MiniMax-M3",
+				BillingMode: DisplayBillingModeToken, Status: domain.UpstreamPriceEvidenceStatusPending,
+				Source:               domain.UpstreamPriceEvidenceSourceActiveProbe,
+				ReconciliationStatus: domain.UpstreamPriceReconciliationBaseline,
+				ContextKey:           "active-baseline",
+				RemoteDelta: domain.UpstreamPriceUsageCounters{
+					Requests: 68, ActualCost: 0.43128484,
+				},
+			},
+			{
+				ID: 2, RunID: 77, AccountID: 7, ModelName: "MiniMax-M3",
+				BillingMode: DisplayBillingModeToken, Status: domain.UpstreamPriceEvidenceStatusTrusted,
+				Source:               domain.UpstreamPriceEvidenceSourceActiveProbe,
+				ReconciliationStatus: domain.UpstreamPriceReconciliationMatched,
+				ContextKey:           "active-final",
+				RemoteDelta: domain.UpstreamPriceUsageCounters{
+					Requests: 1, ActualCost: actualProbeCost,
+				},
+			},
+			{
+				ID: 3, RunID: 77, AccountID: 7, ModelName: "MiniMax-M3",
+				BillingMode: DisplayBillingModeToken, Status: domain.UpstreamPriceEvidenceStatusTrusted,
+				Source:               domain.UpstreamPriceEvidenceSourceUserRequest,
+				ReconciliationStatus: domain.UpstreamPriceReconciliationMatched,
+				ContextKey:           "user-request",
+				RemoteDelta: domain.UpstreamPriceUsageCounters{
+					Requests: 1, ActualCost: 9,
+				},
+			},
+		},
+	}
+	remote := &activeProbeScript{now: time.Date(2026, 8, 31, 1, 15, 0, 0, time.UTC)}
+	svc := NewUpstreamPriceMonitorService(repo, upstreamPriceAutoApplyAccountReader{account: testUpstreamPriceAccount()}, remote)
+	svc.SetActiveProber(remote)
+
+	run, err := svc.RunOnce(context.Background(), UpstreamPriceRunOptions{
+		Trigger: domain.UpstreamPriceMonitorRunTriggerManual,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	require.InDelta(t, actualProbeCost, run.ProbeCost, 1e-12)
+	require.NotNil(t, repo.finished)
+	require.InDelta(t, actualProbeCost, repo.finished.ProbeCost, 1e-12)
 }
 
 func TestUpstreamPriceMonitorAutoApplyGetsIndependentContextAfterProbeCancellation(t *testing.T) {

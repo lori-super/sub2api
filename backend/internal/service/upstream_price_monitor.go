@@ -969,7 +969,8 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 		run.SnapshotHash = upstreamPriceEvidenceHash(evidence)
 		evidenceProbeCost := 0.0
 		for _, item := range evidence {
-			if item.Source == domain.UpstreamPriceEvidenceSourceActiveProbe {
+			if item.Source == domain.UpstreamPriceEvidenceSourceActiveProbe &&
+				item.ReconciliationStatus != domain.UpstreamPriceReconciliationBaseline {
 				evidenceProbeCost += math.Max(0, item.RemoteDelta.ActualCost)
 			}
 			if item.Source != domain.UpstreamPriceEvidenceSourceActiveProbe || item.BillingMode != DisplayBillingModeToken ||
