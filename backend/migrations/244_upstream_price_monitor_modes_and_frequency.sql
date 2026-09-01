@@ -8,6 +8,14 @@ ALTER TABLE upstream_price_monitor_config
     ALTER COLUMN active_probe_run_budget_usd SET DEFAULT 0.1500000000,
     ALTER COLUMN active_probe_daily_budget_usd SET DEFAULT 0.4000000000;
 
+-- Remove the old 24-hour / $0.20 guards before migrating the singleton row;
+-- otherwise PostgreSQL validates the new values against the constraints that
+-- this migration is replacing.
+ALTER TABLE upstream_price_monitor_config
+    DROP CONSTRAINT IF EXISTS upstream_price_monitor_config_mode_check,
+    DROP CONSTRAINT IF EXISTS upstream_price_monitor_config_interval_check,
+    DROP CONSTRAINT IF EXISTS upstream_price_monitor_config_probe_budgets_check;
+
 -- Only migrate the previous product default. Preserve a deliberately chosen
 -- custom interval and every row's enabled/mode state.
 UPDATE upstream_price_monitor_config
@@ -28,9 +36,6 @@ SET interval_minutes = 60,
 WHERE interval_minutes < 60;
 
 ALTER TABLE upstream_price_monitor_config
-    DROP CONSTRAINT IF EXISTS upstream_price_monitor_config_mode_check,
-    DROP CONSTRAINT IF EXISTS upstream_price_monitor_config_interval_check,
-    DROP CONSTRAINT IF EXISTS upstream_price_monitor_config_probe_budgets_check,
     ADD CONSTRAINT upstream_price_monitor_config_mode_check
         CHECK (mode IN ('observe', 'review', 'auto_apply')),
     ADD CONSTRAINT upstream_price_monitor_config_interval_check
