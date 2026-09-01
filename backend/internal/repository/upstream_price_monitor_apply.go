@@ -131,6 +131,16 @@ func (r *upstreamPriceMonitorRepository) ApplyRun(
 	if storedHash != strings.TrimSpace(snapshotHash) {
 		return service.ErrUpstreamPriceSnapshotMismatch
 	}
+	var hasActiveProbeEvidence bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM upstream_price_monitor_evidence WHERE run_id=$1 AND source='active_probe'
+	)`, runID).Scan(&hasActiveProbeEvidence); err != nil {
+		return err
+	}
+	if hasActiveProbeEvidence {
+		return fmt.Errorf("%w: paid active-probe runs are audit evidence only; synchronize prices from the upstream public price page",
+			service.ErrUpstreamPriceRunNotApplicable)
+	}
 	var newerAppliedSnapshot bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM upstream_price_monitor_runs
 		WHERE applied_at IS NOT NULL AND (finished_at > $1 OR (finished_at=$1 AND id>$2)))`,

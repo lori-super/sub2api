@@ -115,8 +115,7 @@ func RegisterAdminRoutes(
 		// 渠道管理
 		registerChannelRoutes(admin, h)
 
-		// 仅影响用户可见页面的展示定价，不影响真实渠道和扣费。
-		registerDisplayPricingRoutes(admin, h)
+		registerDisplayPricingRoutes(admin, h, stepUpAuth)
 		registerUpstreamPriceMonitorRoutes(admin, h, stepUpAuth)
 
 		// 渠道监控
@@ -158,7 +157,11 @@ func registerUpstreamPriceMonitorRoutes(
 	}
 }
 
-func registerDisplayPricingRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerDisplayPricingRoutes(
+	admin *gin.RouterGroup,
+	h *handler.Handlers,
+	stepUpAuth middleware.StepUpAuthMiddleware,
+) {
 	pricing := admin.Group("/display-pricing")
 	{
 		pricing.GET("/settings", h.Admin.DisplayPricing.GetSettings)
@@ -174,7 +177,7 @@ func registerDisplayPricingRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		pricing.GET("/discovered-models", h.Admin.DisplayPricing.ListDiscoveredModels)
 		pricing.POST("/official-sync/preview", h.Admin.DisplayPricing.PreviewOfficialPrices)
 		pricing.POST("/official-sync/apply", h.Admin.DisplayPricing.ApplyOfficialPrices)
-		pricing.POST("/upstream-token-sync", h.Admin.DisplayPricing.SyncUpstreamTokenDisplayPrices)
+		pricing.POST("/upstream-token-sync", gin.HandlerFunc(stepUpAuth), h.Admin.UpstreamPriceMonitor.SyncTokenPrices)
 	}
 }
 

@@ -85,3 +85,12 @@ func TestUpstreamPriceMonitorModesAndFrequencyMigrationPreservesEnabledState(t *
 	require.Contains(t, sql, "where interval_minutes < 60")
 	require.NotContains(t, sql, "set enabled")
 }
+
+func TestUpstreamPriceProbeRotationMigrationCapsAuditSampleAtThree(t *testing.T) {
+	raw, err := os.ReadFile("245_upstream_price_probe_rotation_cap.sql")
+	require.NoError(t, err)
+	sql := strings.ToLower(string(raw))
+	require.Contains(t, sql, "active_probe_max_models_per_run set default 3")
+	require.Contains(t, sql, "least(active_probe_max_models_per_run, 3)")
+	require.Contains(t, sql, "active_probe_max_models_per_run between 1 and 3")
+}

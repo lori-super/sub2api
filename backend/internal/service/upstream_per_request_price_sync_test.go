@@ -49,13 +49,32 @@ func (f *perRequestPricePageStub) tokenCallCount() int {
 
 type perRequestPriceSyncRepoStub struct {
 	*activeProbeTestRepository
-	cfg       domain.UpstreamPriceMonitorConfig
-	result    *UpstreamPerRequestPriceSyncResult
-	err       error
-	calls     int
-	channels  []int64
-	updates   []UpstreamPerRequestPriceUpdate
-	applyRuns int
+	cfg          domain.UpstreamPriceMonitorConfig
+	result       *UpstreamPerRequestPriceSyncResult
+	err          error
+	calls        int
+	channels     []int64
+	updates      []UpstreamPerRequestPriceUpdate
+	tokenResult  *UpstreamTokenPriceSyncResult
+	tokenErr     error
+	tokenCalls   int
+	tokenUpdates []UpstreamTokenPriceUpdate
+	applyRuns    int
+}
+
+func (r *perRequestPriceSyncRepoStub) SyncTokenPrices(
+	_ context.Context,
+	channelIDs []int64,
+	updates []UpstreamTokenPriceUpdate,
+) (*UpstreamTokenPriceSyncResult, error) {
+	r.tokenCalls++
+	r.channels = append([]int64(nil), channelIDs...)
+	r.tokenUpdates = append([]UpstreamTokenPriceUpdate(nil), updates...)
+	if r.tokenResult == nil {
+		return nil, r.tokenErr
+	}
+	copy := *r.tokenResult
+	return &copy, r.tokenErr
 }
 
 func (r *perRequestPriceSyncRepoStub) GetConfig(context.Context) (*domain.UpstreamPriceMonitorConfig, error) {
@@ -146,10 +165,10 @@ func TestSyncPerRequestPricesFailsClosedBeforeMutationWhenPageModelIsMissing(t *
 	require.Zero(t, repo.calls)
 }
 
-func TestUpstreamPriceMonitorRunnerSchedulesPerRequestSyncIndependently(t *testing.T) {
+func TestUpstreamPriceMonitorRunnerSchedulesPerRequestSyncEveryFifteenMinutes(t *testing.T) {
 	first := 0.01
 	cfg := domain.DefaultUpstreamPriceMonitorConfig()
-	cfg.Enabled = false // token scheduler is off; public-page sync remains on.
+	cfg.Enabled = false // Direct due-clock test; the auto-apply gate is covered below.
 	cfg.ChannelIDs = []int64{2}
 	cfg.PerRequestModels = []string{"model-a"}
 	repo := &perRequestPriceSyncRepoStub{
@@ -166,18 +185,18 @@ func TestUpstreamPriceMonitorRunnerSchedulesPerRequestSyncIndependently(t *testi
 	clock := time.Date(2026, 8, 31, 2, 0, 0, 0, time.UTC)
 	runner.now = func() time.Time { return clock }
 
-	runner.runIfDue()
+	runner.runPerRequestIfDue()
 	require.Equal(t, 1, fetcher.callCount())
 	require.Zero(t, repo.applyRuns)
-	clock = clock.Add(23*time.Hour + 59*time.Minute)
-	runner.runIfDue()
+	clock = clock.Add(14 * time.Minute)
+	runner.runPerRequestIfDue()
 	require.Equal(t, 1, fetcher.callCount())
 	clock = clock.Add(time.Minute)
-	runner.runIfDue()
+	runner.runPerRequestIfDue()
 	require.Equal(t, 2, fetcher.callCount())
 }
 
-func TestUpstreamPriceMonitorRunnerRetriesPerRequestSyncAfterOneHour(t *testing.T) {
+func TestUpstreamPriceMonitorRunnerRetriesPerRequestSyncAfterFiveMinutes(t *testing.T) {
 	cfg := domain.DefaultUpstreamPriceMonitorConfig()
 	cfg.ChannelIDs = []int64{2}
 	cfg.PerRequestModels = []string{"model-a"}
@@ -195,7 +214,7 @@ func TestUpstreamPriceMonitorRunnerRetriesPerRequestSyncAfterOneHour(t *testing.
 
 	runner.runPerRequestIfDue()
 	require.Equal(t, 1, fetcher.callCount())
-	clock = clock.Add(59 * time.Minute)
+	clock = clock.Add(4 * time.Minute)
 	runner.runPerRequestIfDue()
 	require.Equal(t, 1, fetcher.callCount())
 	clock = clock.Add(time.Minute)
@@ -203,43 +222,110 @@ func TestUpstreamPriceMonitorRunnerRetriesPerRequestSyncAfterOneHour(t *testing.
 	require.Equal(t, 2, fetcher.callCount())
 }
 
-func TestUpstreamPriceMonitorRunnerNeverAutoSyncsTokenDisplayFromPricePage(t *testing.T) {
-	first, official, selling := 0.01, 1.6, 0.16
+func TestUpstreamPriceMonitorRunnerSchedulesAuthoritativeTokenSyncEveryFifteenMinutes(t *testing.T) {
+	official, selling, output := 1.6, 0.16, 0.32
 	cfg := domain.DefaultUpstreamPriceMonitorConfig()
 	cfg.Enabled = false
 	cfg.ChannelIDs = []int64{2}
-	cfg.PerRequestModels = []string{"model-a"}
+	cfg.DomesticModels = []string{"deepseek-v4-flash-0731"}
 	monitorRepo := &perRequestPriceSyncRepoStub{
 		activeProbeTestRepository: &activeProbeTestRepository{}, cfg: cfg,
-		result: &UpstreamPerRequestPriceSyncResult{Models: 1},
+		tokenResult: &UpstreamTokenPriceSyncResult{Models: 1, ChangedModels: 1, ChangedChannelRows: 1},
 	}
 	fetcher := &perRequestPricePageStub{
-		prices: map[string]domain.UpstreamPriceVector{"model-a": {PerRequestLTE256K: &first}},
 		tokenPrices: map[string]UpstreamTokenDisplayPrice{
-			"deepseek-a": {OfficialInput: &official, SellingInput: &selling},
+			"deepseek-v4-flash-0731": {ModelName: "deepseek-v4-flash-0731", OfficialInput: &official, SellingInput: &selling, SellingOutput: &output},
 		},
 	}
-	displayRepo := &upstreamDisplaySyncRepoStub{stubDisplayPricingRepo: stubDisplayPricingRepo{models: []DisplayModelPrice{{
-		ID: 1, Platform: "openai", ModelName: "deepseek-a", Provider: "deepseek",
-		BillingMode: DisplayBillingModeToken, Currency: DisplayCurrencyCNY, Enabled: true,
-	}}}}
 	svc := NewUpstreamPriceMonitorService(monitorRepo, nil, nil)
 	svc.SetPricePageFetcher(fetcher)
-	svc.SetDisplayPricingService(NewDisplayPricingService(displayRepo))
 	runner := NewUpstreamPriceMonitorRunner(svc)
 	defer runner.cancel()
 	clock := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	runner.now = func() time.Time { return clock }
 
-	runner.runIfDue()
-	require.Equal(t, 1, fetcher.callCount())
-	require.Zero(t, fetcher.tokenCallCount())
-	require.Empty(t, displayRepo.updates)
-	clock = clock.Add(23*time.Hour + 59*time.Minute)
-	runner.runIfDue()
-	require.Zero(t, fetcher.tokenCallCount())
+	runner.runTokenIfDue()
+	require.Equal(t, 1, fetcher.tokenCallCount())
+	require.Equal(t, 1, monitorRepo.tokenCalls)
+	require.Len(t, monitorRepo.tokenUpdates, 1)
+	require.InDelta(t, 0.192, *monitorRepo.tokenUpdates[0].InputPerMillion, 1e-12)
+	clock = clock.Add(14 * time.Minute)
+	runner.runTokenIfDue()
+	require.Equal(t, 1, fetcher.tokenCallCount())
 	clock = clock.Add(time.Minute)
-	runner.runIfDue()
-	require.Zero(t, fetcher.tokenCallCount())
-	require.Equal(t, 2, fetcher.callCount(), "per-request page sync keeps its independent daily schedule")
+	runner.runTokenIfDue()
+	require.Equal(t, 2, fetcher.tokenCallCount())
+	require.Equal(t, 2, monitorRepo.tokenCalls)
+}
+
+func TestUpstreamPriceMonitorRunnerDoesNotAutomaticallyWritePagePricesOutsideAutoApply(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		mode    domain.UpstreamPriceMonitorMode
+	}{
+		{name: "observe", enabled: true, mode: domain.UpstreamPriceMonitorModeObserve},
+		{name: "review", enabled: true, mode: domain.UpstreamPriceMonitorModeReview},
+		{name: "disabled auto apply", enabled: false, mode: domain.UpstreamPriceMonitorModeAutoApply},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := domain.DefaultUpstreamPriceMonitorConfig()
+			cfg.Enabled = tc.enabled
+			cfg.Mode = tc.mode
+			cfg.ChannelIDs = []int64{2}
+			cfg.DomesticModels = []string{"deepseek-v4-flash-0731"}
+			cfg.PerRequestModels = []string{"deepseek-v4-flash-0731"}
+			repo := &perRequestPriceSyncRepoStub{
+				activeProbeTestRepository: &activeProbeTestRepository{}, cfg: cfg,
+				result:      &UpstreamPerRequestPriceSyncResult{Models: 1},
+				tokenResult: &UpstreamTokenPriceSyncResult{Models: 1},
+			}
+			fetcher := &perRequestPricePageStub{}
+			svc := NewUpstreamPriceMonitorService(repo, nil, nil)
+			svc.SetPricePageFetcher(fetcher)
+			runner := NewUpstreamPriceMonitorRunner(svc)
+			defer runner.cancel()
+
+			runner.runPageSyncsIfDue()
+			require.Zero(t, fetcher.callCount())
+			require.Zero(t, fetcher.tokenCallCount())
+			require.Zero(t, repo.calls)
+			require.Zero(t, repo.tokenCalls)
+		})
+	}
+}
+
+func TestUpstreamPriceMonitorRunnerAutoApplyRunsBothPageSyncModesImmediately(t *testing.T) {
+	first, input, output := 0.01, 0.16, 0.32
+	cfg := domain.DefaultUpstreamPriceMonitorConfig()
+	cfg.Enabled = true
+	cfg.Mode = domain.UpstreamPriceMonitorModeAutoApply
+	cfg.ChannelIDs = []int64{2}
+	cfg.DomesticModels = []string{"deepseek-v4-flash-0731"}
+	cfg.PerRequestModels = []string{"deepseek-v4-flash-0731"}
+	repo := &perRequestPriceSyncRepoStub{
+		activeProbeTestRepository: &activeProbeTestRepository{}, cfg: cfg,
+		result:      &UpstreamPerRequestPriceSyncResult{Models: 1},
+		tokenResult: &UpstreamTokenPriceSyncResult{Models: 1},
+	}
+	fetcher := &perRequestPricePageStub{
+		prices: map[string]domain.UpstreamPriceVector{
+			"deepseek-v4-flash-0731": {PerRequestLTE256K: &first},
+		},
+		tokenPrices: map[string]UpstreamTokenDisplayPrice{
+			"deepseek-v4-flash-0731": {
+				ModelName: "deepseek-v4-flash-0731", SellingInput: &input, SellingOutput: &output,
+			},
+		},
+	}
+	svc := NewUpstreamPriceMonitorService(repo, nil, nil)
+	svc.SetPricePageFetcher(fetcher)
+	runner := NewUpstreamPriceMonitorRunner(svc)
+	defer runner.cancel()
+
+	runner.runPageSyncsIfDue()
+	require.Equal(t, 1, fetcher.tokenCallCount())
+	require.Equal(t, 1, fetcher.callCount())
+	require.Equal(t, 1, repo.tokenCalls)
+	require.Equal(t, 1, repo.calls)
 }

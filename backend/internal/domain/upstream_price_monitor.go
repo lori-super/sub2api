@@ -141,7 +141,7 @@ func DefaultUpstreamPriceMonitorConfig() UpstreamPriceMonitorConfig {
 		ActiveProbeEnabled:         false,
 		ActiveOnly:                 true,
 		ActiveProbeMaxRequests:     7,
-		ActiveProbeMaxModels:       19,
+		ActiveProbeMaxModels:       3,
 		ActiveProbeRunBudgetUSD:    0.15,
 		ActiveProbeDailyBudgetUSD:  0.40,
 	}
