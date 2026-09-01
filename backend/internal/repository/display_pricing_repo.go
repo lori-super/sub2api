@@ -316,19 +316,19 @@ func (r *displayPricingRepository) ApplyUpstreamTokenDisplayPriceUpdates(ctx con
 		}
 		var id int64
 		err := tx.QueryRowContext(ctx, `UPDATE display_model_prices SET
-			official_input_per_million=$2, official_output_per_million=$3,
-			official_cache_write_per_million=$4, official_cache_read_per_million=$5,
-			display_input_per_million_override=$6, display_output_per_million_override=$7,
-			display_cache_write_per_million_override=$8, display_cache_read_per_million_override=$9,
+			official_input_per_million=ROUND($2::numeric,8), official_output_per_million=ROUND($3::numeric,8),
+			official_cache_write_per_million=ROUND($4::numeric,8), official_cache_read_per_million=ROUND($5::numeric,8),
+			display_input_per_million_override=ROUND($6::numeric,8), display_output_per_million_override=ROUND($7::numeric,8),
+			display_cache_write_per_million_override=ROUND($8::numeric,8), display_cache_read_per_million_override=ROUND($9::numeric,8),
 			model_multiplier=NULL, input_multiplier_override=NULL, output_multiplier_override=NULL,
 			cache_write_multiplier_override=NULL, cache_read_multiplier_override=NULL,
 			official_price_source=$10, official_price_source_url=$11, official_price_synced_at=$12,
 			updated_at=NOW()
 			WHERE id=$1 AND billing_mode='token' AND (
-				official_input_per_million IS DISTINCT FROM $2 OR official_output_per_million IS DISTINCT FROM $3 OR
-				official_cache_write_per_million IS DISTINCT FROM $4 OR official_cache_read_per_million IS DISTINCT FROM $5 OR
-				display_input_per_million_override IS DISTINCT FROM $6 OR display_output_per_million_override IS DISTINCT FROM $7 OR
-				display_cache_write_per_million_override IS DISTINCT FROM $8 OR display_cache_read_per_million_override IS DISTINCT FROM $9 OR
+				official_input_per_million IS DISTINCT FROM ROUND($2::numeric,8) OR official_output_per_million IS DISTINCT FROM ROUND($3::numeric,8) OR
+				official_cache_write_per_million IS DISTINCT FROM ROUND($4::numeric,8) OR official_cache_read_per_million IS DISTINCT FROM ROUND($5::numeric,8) OR
+				display_input_per_million_override IS DISTINCT FROM ROUND($6::numeric,8) OR display_output_per_million_override IS DISTINCT FROM ROUND($7::numeric,8) OR
+				display_cache_write_per_million_override IS DISTINCT FROM ROUND($8::numeric,8) OR display_cache_read_per_million_override IS DISTINCT FROM ROUND($9::numeric,8) OR
 				model_multiplier IS NOT NULL OR input_multiplier_override IS NOT NULL OR output_multiplier_override IS NOT NULL OR
 				cache_write_multiplier_override IS NOT NULL OR cache_read_multiplier_override IS NOT NULL OR
 				official_price_source IS DISTINCT FROM $10 OR official_price_source_url IS DISTINCT FROM $11
