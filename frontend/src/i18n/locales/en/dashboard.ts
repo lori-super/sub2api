@@ -601,7 +601,6 @@ export default {
     description: 'Browse customer-facing model prices',
     dynamicDescription: 'Browse usage, per-request, and image model prices by provider. Admin price changes sync automatically.',
     liveCatalog: 'Live display prices',
-    displayOnlyNotice: 'Prices on this page are display-only and fully independent from channel costs, account routing, and actual billing.',
     sections: {
       token: {
         eyebrow: 'BY TOKEN USAGE',

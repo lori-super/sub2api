@@ -17,10 +17,6 @@
           <p class="mt-2 max-w-xl text-sm leading-6 text-slate-300">
             {{ t('modelPlaza.dynamicDescription') }}
           </p>
-          <p class="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-amber-300">
-            <Icon name="infoCircle" size="xs" />
-            {{ t('modelPlaza.displayOnlyNotice') }}
-          </p>
         </div>
 
         <div class="grid grid-cols-2 gap-2.5 sm:min-w-[300px]">
@@ -130,7 +126,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import Icon from '@/components/icons/Icon.vue'
 import PlazaFilterBar from './PlazaFilterBar.vue'
 import PlazaGroupSection from './PlazaGroupSection.vue'
 import type {
