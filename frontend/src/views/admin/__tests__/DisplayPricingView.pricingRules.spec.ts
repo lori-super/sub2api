@@ -54,4 +54,12 @@ describe('DisplayPricingView pricing rules', () => {
     expect(source).toContain('v-for="field in displayPriceOverrideFields"')
     expect(source).toContain("admin.displayPricing.priceOverrides.hint")
   })
+
+  it('offers a display-only upstream token-price sync and refreshes the catalogue afterward', () => {
+    expect(source).toContain('data-testid="upstream-token-sync"')
+    expect(source).toContain('adminAPI.displayPricing.syncUpstreamTokenDisplayPrices()')
+    expect(source).toContain('await loadData()')
+    expect(source).toContain("admin.displayPricing.upstreamSync.hint")
+    expect(source).toContain('notifyDisplayPricingUpdated()')
+  })
 })

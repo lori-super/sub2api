@@ -12,6 +12,13 @@ export default {
     loadFailed: '加载展示定价失败',
     saveFailed: '保存展示定价失败',
     saved: '展示定价已保存',
+    upstreamSync: {
+      button: '同步上游展示价',
+      syncing: '正在同步…',
+      hint: '仅更新 19 个国内按量模型的官价参考与本站展示售价（上游公开页到手价 × 1.2），不影响渠道定价和真实扣费。',
+      success: '同步完成：上游 {source} 个模型中已更新 {updated} 个国内按量展示价。',
+      failed: '同步上游展示价失败'
+    },
     currency: '展示币种',
     sortOrder: '排序',
     global: {
