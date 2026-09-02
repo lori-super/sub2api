@@ -39,6 +39,57 @@ func TestOpenAISelectAccountForModelWithExclusions_ChannelMappedRestrictionRejec
 	require.Contains(t, err.Error(), "channel pricing restriction")
 }
 
+func TestOpenAISelectAccountForModelWithExclusions_DeepSeekUndatedAlias(t *testing.T) {
+	t.Parallel()
+
+	channelSvc := newTestChannelService(makeStandardRepo(Channel{
+		ID:                 1,
+		Status:             StatusActive,
+		GroupIDs:           []int64{10},
+		RestrictModels:     true,
+		BillingModelSource: BillingModelSourceRequested,
+		ModelPricing: []ChannelModelPricing{
+			{Platform: PlatformOpenAI, Models: []string{"deepseek-v4-pro-0813"}},
+		},
+		ModelMapping: map[string]map[string]string{
+			PlatformOpenAI: {"deepseek-v4-pro-0813": "deepseek-v4-pro-0813"},
+		},
+	}, map[int64]string{10: PlatformOpenAI}))
+
+	svc := &OpenAIGatewayService{
+		accountRepo: stubOpenAIAccountRepo{accounts: []Account{
+			{
+				ID:          1,
+				Platform:    PlatformOpenAI,
+				Status:      StatusActive,
+				Schedulable: true,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{
+						"deepseek-v4-pro-0813": "deepseek-v4-pro-0813",
+					},
+				},
+			},
+		}},
+		channelService: channelSvc,
+	}
+
+	groupID := int64(10)
+	account, err := svc.SelectAccountForModelWithExclusions(
+		context.Background(),
+		&groupID,
+		"",
+		"deepseek-v4-pro",
+		nil,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, account)
+	require.Equal(t, int64(1), account.ID)
+
+	mapping := channelSvc.ResolveChannelMapping(context.Background(), groupID, "deepseek-v4-pro")
+	require.True(t, mapping.Mapped)
+	require.Equal(t, "deepseek-v4-pro-0813", mapping.MappedModel)
+}
+
 func TestOpenAISelectAccountForModelWithExclusions_UpstreamRestrictionSkipsDisallowedAccount(t *testing.T) {
 	t.Parallel()
 

@@ -347,7 +347,8 @@ func (r *upstreamPriceMonitorRepository) GetRuntime(ctx context.Context) (*domai
 	}
 	_ = rows.Close()
 	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(COALESCE((remote_delta->>'actual_cost')::numeric,0)),0)
-		FROM upstream_price_monitor_evidence WHERE source='active_probe' AND created_at >= CURRENT_DATE`).Scan(&runtime.TodayProbeCost); err != nil {
+		FROM upstream_price_monitor_evidence WHERE source='active_probe' AND reconciliation_status<>'baseline'
+		  AND created_at >= CURRENT_DATE`).Scan(&runtime.TodayProbeCost); err != nil {
 		return nil, err
 	}
 	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(probe_cost),0)

@@ -16,11 +16,14 @@ type upstreamPriceAutoApplyRepository struct {
 	catalog          []domain.UpstreamPriceModelCatalogEntry
 	created          *domain.UpstreamPriceMonitorRun
 	finished         *domain.UpstreamPriceMonitorRun
+	frozenEvidence   []domain.UpstreamPriceEvidence
 	freezeChannelIDs []int64
 	applyCalls       int
 	rollbackCalls    int
 	finishHook       func()
 	applyContextErr  error
+	rotationInput    []string
+	rotationSelected []string
 }
 
 func (r *upstreamPriceAutoApplyRepository) GetConfig(context.Context) (*domain.UpstreamPriceMonitorConfig, error) {
@@ -48,6 +51,17 @@ func (r *upstreamPriceAutoApplyRepository) ListModelCatalog(context.Context) ([]
 	return append([]domain.UpstreamPriceModelCatalogEntry(nil), r.catalog...), nil
 }
 
+func (r *upstreamPriceAutoApplyRepository) SelectActiveProbeModels(_ context.Context, managed []string, limit int) ([]string, error) {
+	r.rotationInput = append([]string(nil), managed...)
+	if len(r.rotationSelected) > 0 {
+		return append([]string(nil), r.rotationSelected...), nil
+	}
+	if limit > len(managed) {
+		limit = len(managed)
+	}
+	return append([]string(nil), managed[:limit]...), nil
+}
+
 func (r *upstreamPriceAutoApplyRepository) CreateRun(_ context.Context, run *domain.UpstreamPriceMonitorRun) error {
 	run.ID = 77
 	copy := *run
@@ -72,6 +86,9 @@ func (r *upstreamPriceAutoApplyRepository) FreezeEvidenceApplySnapshot(
 	_ int,
 ) ([]domain.UpstreamPriceEvidence, error) {
 	r.freezeChannelIDs = append([]int64(nil), channelIDs...)
+	if r.frozenEvidence != nil {
+		return append([]domain.UpstreamPriceEvidence(nil), r.frozenEvidence...), nil
+	}
 	return []domain.UpstreamPriceEvidence{{
 		ID: 1, RunID: 77, AccountID: 7, ModelName: "MiniMax-M3",
 		BillingMode: DisplayBillingModeToken, Status: domain.UpstreamPriceEvidenceStatusTrusted,
@@ -252,7 +269,7 @@ func TestUpstreamPriceMonitorManualRunAlwaysStaysDryRun(t *testing.T) {
 	require.Zero(t, repo.applyCalls)
 }
 
-func TestUpstreamPriceMonitorScheduledAutoApplyInvalidatesPricingCache(t *testing.T) {
+func TestUpstreamPriceMonitorScheduledProbeNeverAppliesEvenInAutoMode(t *testing.T) {
 	cfg := testAutoApplyConfig()
 	repo := &upstreamPriceAutoApplyRepository{
 		activeProbeTestRepository: &activeProbeTestRepository{},
@@ -263,6 +280,8 @@ func TestUpstreamPriceMonitorScheduledAutoApplyInvalidatesPricingCache(t *testin
 	svc.SetActiveProber(remote)
 	invalidator := &upstreamPriceCacheInvalidator{}
 	svc.SetPricingCacheInvalidator(invalidator)
+	notifications := &upstreamPriceNotificationCapture{}
+	svc.SetNotifier(notifications)
 
 	run, err := svc.RunOnce(context.Background(), UpstreamPriceRunOptions{
 		Trigger: domain.UpstreamPriceMonitorRunTriggerScheduled,
@@ -271,14 +290,101 @@ func TestUpstreamPriceMonitorScheduledAutoApplyInvalidatesPricingCache(t *testin
 
 	require.NoError(t, err)
 	require.NotNil(t, run)
-	require.False(t, repo.created.DryRun)
+	require.True(t, repo.created.DryRun)
+	require.Equal(t, []string{"MiniMax-M3"}, repo.rotationInput)
 	require.Equal(t, []int64{3}, repo.freezeChannelIDs)
-	require.Equal(t, 1, repo.applyCalls)
-	require.NotNil(t, run.AppliedAt)
-	require.Equal(t, 1, invalidator.calls)
+	require.Zero(t, repo.applyCalls)
+	require.Nil(t, run.AppliedAt)
+	require.Zero(t, invalidator.calls)
+	require.Empty(t, notifications.payloads, "a healthy scheduled audit must not send routine email")
 }
 
-func TestUpstreamPriceMonitorAutoApplyGetsIndependentContextAfterProbeCancellation(t *testing.T) {
+func TestUpstreamPriceMonitorScheduledMismatchAlertsWithoutApplying(t *testing.T) {
+	cfg := testAutoApplyConfig()
+	repo := &upstreamPriceAutoApplyRepository{
+		activeProbeTestRepository: &activeProbeTestRepository{},
+		config:                    &cfg,
+		frozenEvidence: []domain.UpstreamPriceEvidence{{
+			ID: 9, RunID: 77, AccountID: 7, ModelName: "MiniMax-M3",
+			BillingMode: DisplayBillingModeToken, Status: domain.UpstreamPriceEvidenceStatusMismatch,
+			Source:               domain.UpstreamPriceEvidenceSourceActiveProbe,
+			ReconciliationStatus: domain.UpstreamPriceReconciliationMismatch,
+			ContextKey:           "active-final", LastError: "audit ledger mismatch",
+		}},
+	}
+	remote := &activeProbeScript{now: time.Date(2026, 8, 31, 1, 15, 0, 0, time.UTC)}
+	svc := NewUpstreamPriceMonitorService(repo, upstreamPriceAutoApplyAccountReader{account: testUpstreamPriceAccount()}, remote)
+	svc.SetActiveProber(remote)
+	notifications := &upstreamPriceNotificationCapture{}
+	svc.SetNotifier(notifications)
+
+	run, err := svc.RunOnce(context.Background(), UpstreamPriceRunOptions{
+		Trigger: domain.UpstreamPriceMonitorRunTriggerScheduled,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, domain.UpstreamPriceMonitorRunStatusPartial, run.Status)
+	require.Zero(t, repo.applyCalls)
+	require.Len(t, notifications.payloads, 1)
+	require.Equal(t, UpstreamPriceMonitorNotificationPartial, notifications.payloads[0].Action)
+}
+
+func TestUpstreamPriceMonitorRunProbeCostExcludesRecoveredBaselineEvidence(t *testing.T) {
+	cfg := testAutoApplyConfig()
+	cfg.Mode = domain.UpstreamPriceMonitorModeReview
+	const actualProbeCost = 0.00012345
+	repo := &upstreamPriceAutoApplyRepository{
+		activeProbeTestRepository: &activeProbeTestRepository{},
+		config:                    &cfg,
+		frozenEvidence: []domain.UpstreamPriceEvidence{
+			{
+				ID: 1, RunID: 77, AccountID: 7, ModelName: "MiniMax-M3",
+				BillingMode: DisplayBillingModeToken, Status: domain.UpstreamPriceEvidenceStatusPending,
+				Source:               domain.UpstreamPriceEvidenceSourceActiveProbe,
+				ReconciliationStatus: domain.UpstreamPriceReconciliationBaseline,
+				ContextKey:           "active-baseline",
+				RemoteDelta: domain.UpstreamPriceUsageCounters{
+					Requests: 68, ActualCost: 0.43128484,
+				},
+			},
+			{
+				ID: 2, RunID: 77, AccountID: 7, ModelName: "MiniMax-M3",
+				BillingMode: DisplayBillingModeToken, Status: domain.UpstreamPriceEvidenceStatusTrusted,
+				Source:               domain.UpstreamPriceEvidenceSourceActiveProbe,
+				ReconciliationStatus: domain.UpstreamPriceReconciliationMatched,
+				ContextKey:           "active-final",
+				RemoteDelta: domain.UpstreamPriceUsageCounters{
+					Requests: 1, ActualCost: actualProbeCost,
+				},
+			},
+			{
+				ID: 3, RunID: 77, AccountID: 7, ModelName: "MiniMax-M3",
+				BillingMode: DisplayBillingModeToken, Status: domain.UpstreamPriceEvidenceStatusTrusted,
+				Source:               domain.UpstreamPriceEvidenceSourceUserRequest,
+				ReconciliationStatus: domain.UpstreamPriceReconciliationMatched,
+				ContextKey:           "user-request",
+				RemoteDelta: domain.UpstreamPriceUsageCounters{
+					Requests: 1, ActualCost: 9,
+				},
+			},
+		},
+	}
+	remote := &activeProbeScript{now: time.Date(2026, 8, 31, 1, 15, 0, 0, time.UTC)}
+	svc := NewUpstreamPriceMonitorService(repo, upstreamPriceAutoApplyAccountReader{account: testUpstreamPriceAccount()}, remote)
+	svc.SetActiveProber(remote)
+
+	run, err := svc.RunOnce(context.Background(), UpstreamPriceRunOptions{
+		Trigger: domain.UpstreamPriceMonitorRunTriggerManual,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	require.InDelta(t, actualProbeCost, run.ProbeCost, 1e-12)
+	require.NotNil(t, repo.finished)
+	require.InDelta(t, actualProbeCost, repo.finished.ProbeCost, 1e-12)
+}
+
+func TestUpstreamPriceMonitorCanceledProbeContextStillNeverApplies(t *testing.T) {
 	cfg := testAutoApplyConfig()
 	ctx, cancel := context.WithCancel(context.Background())
 	repo := &upstreamPriceAutoApplyRepository{
@@ -296,19 +402,20 @@ func TestUpstreamPriceMonitorAutoApplyGetsIndependentContextAfterProbeCancellati
 	})
 
 	require.NoError(t, err)
-	require.NotNil(t, run.AppliedAt)
-	require.Equal(t, 1, repo.applyCalls)
-	require.NoError(t, repo.applyContextErr)
+	require.Nil(t, run.AppliedAt)
+	require.Zero(t, repo.applyCalls)
 }
 
-func TestUpstreamPriceMonitorApplyChecksAccountIdentityAndRollbackInvalidatesCache(t *testing.T) {
+func TestUpstreamPriceMonitorPaidProbeApplyIsDisabledButLegacyRollbackRemainsAvailable(t *testing.T) {
 	account := testUpstreamPriceAccount()
 	cfg := testAutoApplyConfig()
+	appliedAt := time.Date(2026, 8, 31, 1, 30, 0, 0, time.UTC)
 	repo := &upstreamPriceAutoApplyRepository{
 		activeProbeTestRepository: &activeProbeTestRepository{},
 		config:                    &cfg,
 		finished: &domain.UpstreamPriceMonitorRun{
 			ID: 77, Status: domain.UpstreamPriceMonitorRunStatusCompleted, SnapshotHash: "snapshot",
+			AppliedAt: &appliedAt, RollbackAvailable: true,
 			Summary: map[string]any{
 				"account_ids": []int64{7}, "channel_ids": []int64{3},
 				"display_multiplier_decimals": 3, "snapshot_max_age_minutes": 60,
@@ -322,24 +429,16 @@ func TestUpstreamPriceMonitorApplyChecksAccountIdentityAndRollbackInvalidatesCac
 	invalidator := &upstreamPriceCacheInvalidator{}
 	svc.SetPricingCacheInvalidator(invalidator)
 
-	applied, err := svc.ApplyRun(context.Background(), 77, "snapshot")
-	require.NoError(t, err)
-	require.NotNil(t, applied.AppliedAt)
-	require.Equal(t, 1, repo.applyCalls)
-	require.Equal(t, 1, invalidator.calls)
+	_, err := svc.ApplyRun(context.Background(), 77, "snapshot")
+	require.ErrorIs(t, err, ErrUpstreamPriceRunNotApplicable)
+	require.Zero(t, repo.applyCalls)
+	require.Zero(t, invalidator.calls)
 
 	rolledBack, err := svc.RollbackRun(context.Background(), 77, "snapshot")
 	require.NoError(t, err)
 	require.Nil(t, rolledBack.AppliedAt)
 	require.Equal(t, 1, repo.rollbackCalls)
-	require.Equal(t, 2, invalidator.calls)
-
-	rotated := testUpstreamPriceAccount()
-	rotated.Credentials["api_key"] = "rotated-key-not-real"
-	svc = NewUpstreamPriceMonitorService(repo, upstreamPriceAutoApplyAccountReader{account: rotated}, nil)
-	_, err = svc.ApplyRun(context.Background(), 77, "snapshot")
-	require.ErrorIs(t, err, ErrUpstreamPriceSnapshotMismatch)
-	require.Equal(t, 1, repo.applyCalls)
+	require.Equal(t, 1, invalidator.calls)
 }
 
 func TestUpstreamPriceMonitorObserveModeRejectsManualApply(t *testing.T) {
@@ -364,7 +463,7 @@ func TestUpstreamPriceMonitorObserveModeRejectsManualApply(t *testing.T) {
 	require.Zero(t, repo.rollbackCalls)
 }
 
-func TestUpstreamPriceMonitorReviewModeAllowsManualApply(t *testing.T) {
+func TestUpstreamPriceMonitorReviewModeStillRejectsPaidProbeApply(t *testing.T) {
 	account := testUpstreamPriceAccount()
 	cfg := testAutoApplyConfig()
 	cfg.Mode = domain.UpstreamPriceMonitorModeReview
@@ -386,6 +485,6 @@ func TestUpstreamPriceMonitorReviewModeAllowsManualApply(t *testing.T) {
 
 	_, err := svc.ApplyRun(context.Background(), 77, "snapshot")
 
-	require.NoError(t, err)
-	require.Equal(t, 1, repo.applyCalls)
+	require.ErrorIs(t, err, ErrUpstreamPriceRunNotApplicable)
+	require.Zero(t, repo.applyCalls)
 }

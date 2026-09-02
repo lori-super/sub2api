@@ -132,7 +132,9 @@ func TestDisplayPricingRepositoryApplyOfficialPricesIsAtomicAndScoped(t *testing
 			service.HerohaoOfficialPriceCandidateURL, now.Add(time.Minute), int64(9), now).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(9)))
 	mock.ExpectCommit()
-	require.NoError(t, NewDisplayPricingRepository(db).(*displayPricingRepository).ApplyOfficialPriceUpdates(context.Background(), updates))
+	repo, ok := NewDisplayPricingRepository(db).(*displayPricingRepository)
+	require.True(t, ok)
+	require.NoError(t, repo.ApplyOfficialPriceUpdates(context.Background(), updates))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -154,7 +156,9 @@ func TestDisplayPricingRepositoryOfficialPriceConflictRollsBackWholeBatch(t *tes
 		WithArgs("1.00000000", nil, nil, nil, service.OfficialPriceSourceHerohaoAggregate, service.HerohaoOfficialPriceCandidateURL, now, int64(2), now).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectRollback()
-	err = NewDisplayPricingRepository(db).(*displayPricingRepository).ApplyOfficialPriceUpdates(context.Background(), updates)
+	repo, ok := NewDisplayPricingRepository(db).(*displayPricingRepository)
+	require.True(t, ok)
+	err = repo.ApplyOfficialPriceUpdates(context.Background(), updates)
 	require.ErrorIs(t, err, service.ErrOfficialPriceApplyConflict)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -180,8 +184,9 @@ func TestDisplayPricingRepositoryAppliesExactUpstreamPricesWithoutTouchingProvid
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(8)))
 	mock.ExpectCommit()
 
-	changed, err := NewDisplayPricingRepository(db).(*displayPricingRepository).
-		ApplyUpstreamTokenDisplayPriceUpdates(context.Background(), updates)
+	repo, ok := NewDisplayPricingRepository(db).(*displayPricingRepository)
+	require.True(t, ok)
+	changed, err := repo.ApplyUpstreamTokenDisplayPriceUpdates(context.Background(), updates)
 	require.NoError(t, err)
 	require.Equal(t, 1, changed)
 	require.NoError(t, mock.ExpectationsWereMet())

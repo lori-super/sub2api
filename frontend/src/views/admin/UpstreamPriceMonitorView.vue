@@ -119,15 +119,6 @@
                 {{ t('admin.upstreamPriceMonitor.overview.rules') }}
               </button>
               <button
-                v-if="configDraft.mode === 'review' && latestApplicableRun"
-                type="button"
-                class="btn btn-secondary"
-                data-testid="apply-latest"
-                @click="requestRunAction('apply', latestApplicableRun)"
-              >
-                {{ t('admin.upstreamPriceMonitor.overview.apply') }}
-              </button>
-              <button
                 v-if="configDraft.mode !== 'observe' && latestRollbackRun"
                 type="button"
                 class="btn btn-secondary text-amber-700 dark:text-amber-300"
@@ -350,7 +341,7 @@
                 </label>
                 <label class="form-field">
                   <span class="field-label">{{ t('admin.upstreamPriceMonitor.config.maxModelsPerRun') }}</span>
-                  <input v-model.number="configDraft.active_probe_max_models_per_run" type="number" min="1" max="19" step="1" class="input mt-1.5 font-mono" data-testid="config-max-models" />
+                  <input v-model.number="configDraft.active_probe_max_models_per_run" type="number" min="1" max="3" step="1" class="input mt-1.5 font-mono" data-testid="config-max-models" />
                   <span class="config-hint mt-1">{{ t('admin.upstreamPriceMonitor.config.maxModelsPerRunHint') }}</span>
                 </label>
                 <label class="form-field">
@@ -530,9 +521,6 @@
                       <p class="text-[11px] text-gray-400">{{ t('admin.upstreamPriceMonitor.history.cost') }}</p>
                       <p class="mt-0.5 font-mono text-sm font-semibold text-gray-800 dark:text-gray-100">{{ formatMoney(run.probe_cost) }}</p>
                     </div>
-                    <button v-if="configDraft.mode === 'review' && canApply(run)" type="button" class="btn btn-primary px-3 py-1.5 text-xs" @click="requestRunAction('apply', run)">
-                      {{ t('admin.upstreamPriceMonitor.overview.apply') }}
-                    </button>
                     <button v-if="canRollback(run)" type="button" class="btn btn-secondary px-3 py-1.5 text-xs text-amber-700 dark:text-amber-300" @click="requestRunAction('rollback', run)">
                       {{ t('admin.upstreamPriceMonitor.overview.rollback') }}
                     </button>
@@ -612,7 +600,7 @@ const defaultConfig = (): UpstreamPriceMonitorConfig => ({
   passive_sample_max_age_minutes: 1440,
   active_probe_enabled: true,
   active_only: true,
-  active_probe_max_models_per_run: 19,
+  active_probe_max_models_per_run: 3,
   active_probe_max_requests_per_model: 7,
   active_probe_run_budget_usd: 0.15,
   active_probe_daily_budget_usd: 0.40,
@@ -738,7 +726,6 @@ const filteredModelCatalog = computed(() => {
   })
 })
 const hasReconciliationMismatch = computed(() => evidence.value.some(isEvidenceMismatch))
-const latestApplicableRun = computed(() => runs.value.find(canApply) || null)
 const latestRollbackRun = computed(() => runs.value.find(canRollback) || null)
 
 function assignConfig(config: UpstreamPriceMonitorConfig): void {
@@ -875,7 +862,7 @@ function validateConfig(): string {
   if (![60, 180, 360, 720, 1440].includes(configDraft.interval_minutes)) return t('admin.upstreamPriceMonitor.config.validationInterval')
   if (configDraft.markup !== 1.2) return t('admin.upstreamPriceMonitor.config.validationMarkup')
   if (!Number.isInteger(configDraft.display_multiplier_decimals) || configDraft.display_multiplier_decimals < 0 || configDraft.display_multiplier_decimals > 6) return t('admin.upstreamPriceMonitor.config.validationDecimals')
-  if (!Number.isInteger(configDraft.active_probe_max_models_per_run) || configDraft.active_probe_max_models_per_run < 1 || configDraft.active_probe_max_models_per_run > 19) return t('admin.upstreamPriceMonitor.config.validationMaxModels')
+  if (!Number.isInteger(configDraft.active_probe_max_models_per_run) || configDraft.active_probe_max_models_per_run < 1 || configDraft.active_probe_max_models_per_run > 3) return t('admin.upstreamPriceMonitor.config.validationMaxModels')
   if (!Number.isInteger(configDraft.active_probe_max_requests_per_model) || configDraft.active_probe_max_requests_per_model < 1 || configDraft.active_probe_max_requests_per_model > 7) return t('admin.upstreamPriceMonitor.config.validationMaxRequests')
   if (!Number.isFinite(configDraft.active_probe_run_budget_usd) || configDraft.active_probe_run_budget_usd <= 0 || configDraft.active_probe_run_budget_usd > 0.15) return t('admin.upstreamPriceMonitor.config.validationRunBudget')
   if (!Number.isFinite(configDraft.active_probe_daily_budget_usd) || configDraft.active_probe_daily_budget_usd <= 0 || configDraft.active_probe_daily_budget_usd > 0.40) return t('admin.upstreamPriceMonitor.config.validationDailyBudget')
@@ -956,10 +943,6 @@ async function confirmRunAction(): Promise<void> {
       : t('admin.upstreamPriceMonitor.messages.applyFailed')
     appStore.showError(localizedApiError(error, fallback))
   }
-}
-
-function canApply(run: UpstreamPriceMonitorRun): boolean {
-  return configDraft.mode === 'review' && run.status === 'completed' && Boolean(run.snapshot_hash) && !run.applied_at
 }
 
 function canRollback(run: UpstreamPriceMonitorRun): boolean {
@@ -1139,16 +1122,13 @@ function applyStateLabel(item: UpstreamPriceEvidence): string {
   if (item.status !== 'trusted') return t('admin.upstreamPriceMonitor.applyState.unavailable')
   if (evidenceWasApplied(item)) return t('admin.upstreamPriceMonitor.applyState.appliedRun')
   if (!evidenceNeedsApply(item)) return t('admin.upstreamPriceMonitor.applyState.applied')
-  if (configDraft.mode === 'observe') return t('admin.upstreamPriceMonitor.applyState.observedOnly')
-  if (configDraft.mode === 'review') return t('admin.upstreamPriceMonitor.applyState.awaitingReview')
-  return t('admin.upstreamPriceMonitor.applyState.awaitingAuto')
+  return t('admin.upstreamPriceMonitor.applyState.observedOnly')
 }
 
 function applyStateClass(item: UpstreamPriceEvidence): string {
   if (item.status !== 'trusted') return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-dark-200'
   if (evidenceWasApplied(item) || !evidenceNeedsApply(item)) return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
-  if (configDraft.mode === 'observe') return 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300'
-  return 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'
+  return 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300'
 }
 
 function localizedMonitorError(value?: string | null): string {

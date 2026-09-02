@@ -159,7 +159,7 @@ func TestLoadTrustedApplyEvidenceSkipsFixedFeeModelAndKeepsOtherModels(t *testin
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestApplyRunAllFixedFeeModelsRecordsSkipSummaryThenReturnsNotApplicable(t *testing.T) {
+func TestApplyRunRejectsPaidActiveProbeEvidenceBeforeAnyPriceWrite(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
@@ -173,32 +173,15 @@ func TestApplyRunAllFixedFeeModelsRecordsSkipSummaryThenReturnsNotApplicable(t *
 		WillReturnRows(sqlmock.NewRows([]string{"trigger", "status", "snapshot_hash", "applied_at", "finished_at"}).
 			AddRow(string(domain.UpstreamPriceMonitorRunTriggerScheduled), string(domain.UpstreamPriceMonitorRunStatusCompleted),
 				"snapshot", nil, now))
-	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM upstream_price_monitor_runs`).
-		WithArgs(now, int64(75)).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
-	mock.ExpectQuery(`SELECT enabled,mode,updated_at FROM upstream_price_monitor_config`).
-		WillReturnRows(sqlmock.NewRows([]string{"enabled", "mode", "updated_at"}).
-			AddRow(true, string(domain.UpstreamPriceMonitorModeAutoApply), configUpdatedAt))
-	mock.ExpectQuery(`SELECT revision FROM upstream_price_monitor_model_scan_state`).
-		WillReturnRows(sqlmock.NewRows([]string{"revision"}).AddRow(int64(1)))
-	mock.ExpectQuery(`WHERE run_id=\$1 AND source='active_probe' AND billing_mode='token' AND status='trusted'`).
+	mock.ExpectQuery(`SELECT EXISTS\(\s*SELECT 1 FROM upstream_price_monitor_evidence`).
 		WithArgs(int64(75)).
-		WillReturnRows(sqlmock.NewRows([]string{
-			"account_id", "model_name", "billing_mode", "status", "source", "context_key",
-			"prices", "current_prices", "suggested_prices", "display_prices_current", "display_multiplier_current",
-		}).AddRow(int64(3), "fixed-only", service.DisplayBillingModeToken,
-			string(domain.UpstreamPriceEvidenceStatusTrusted), string(domain.UpstreamPriceEvidenceSourceActiveProbe),
-			"active-final", []byte(`{"fixed_per_request":0.001,"input_per_million":0.2}`),
-			[]byte(`{"input_per_million":0.1}`),
-			[]byte(`{"fixed_per_request":0.0012,"input_per_million":0.24}`), []byte(`{}`), nil))
-	mock.ExpectExec(`summary=jsonb_set\(summary,'\{skipped_models\}',\$2::jsonb,true\)`).
-		WithArgs(int64(75), sqlmock.AnyArg()).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectRollback()
 
 	repo := &upstreamPriceMonitorRepository{db: db}
 	err = repo.ApplyRun(context.Background(), 75, "snapshot", []int64{8}, []int64{3}, 3, 60, configUpdatedAt, 1)
 	require.ErrorIs(t, err, service.ErrUpstreamPriceRunNotApplicable)
+	require.Contains(t, err.Error(), "audit evidence only")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -216,6 +199,9 @@ func TestApplyRunObserveModeNeverWritesPrices(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"trigger", "status", "snapshot_hash", "applied_at", "finished_at"}).
 			AddRow(string(domain.UpstreamPriceMonitorRunTriggerManual), string(domain.UpstreamPriceMonitorRunStatusCompleted),
 				"snapshot", nil, now))
+	mock.ExpectQuery(`SELECT EXISTS\(\s*SELECT 1 FROM upstream_price_monitor_evidence`).
+		WithArgs(int64(76)).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM upstream_price_monitor_runs`).
 		WithArgs(now, int64(76)).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))

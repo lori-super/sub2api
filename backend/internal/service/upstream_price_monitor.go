@@ -68,9 +68,9 @@ var (
 	)
 )
 
-// UpstreamPriceMonitorRepository owns the durable probe snapshot and its
-// atomic channel/display apply transaction. Collection never mutates pricing;
-// only the explicit ApplyRun boundary can do so.
+// UpstreamPriceMonitorRepository owns durable audit evidence and legacy run
+// history. Paid probe runs are never a pricing write source; public-page
+// synchronizers own the separate channel/display mutation boundary.
 type UpstreamPriceMonitorRepository interface {
 	GetConfig(context.Context) (*domain.UpstreamPriceMonitorConfig, error)
 	UpdateConfig(context.Context, *domain.UpstreamPriceMonitorConfig) error
@@ -93,6 +93,14 @@ type UpstreamPriceMonitorRepository interface {
 	ReconcileModelCatalog(context.Context, []domain.UpstreamPriceDiscoveredModel, int, bool) (int64, error)
 	ListModelCatalog(context.Context) ([]domain.UpstreamPriceModelCatalogEntry, error)
 	SetModelCatalogStatus(context.Context, string, domain.UpstreamPriceModelStatus) (*domain.UpstreamPriceModelCatalogEntry, error)
+}
+
+// upstreamPriceProbeRotationRepository is optional so unit-test and alternate
+// repositories remain small. Production implements it with durable evidence
+// ordering, preventing a capped probe from selecting the same first models on
+// every run.
+type upstreamPriceProbeRotationRepository interface {
+	SelectActiveProbeModels(context.Context, []string, int) ([]string, error)
 }
 
 type upstreamPriceMonitorAccountReader interface {
@@ -354,51 +362,10 @@ func (s *UpstreamPriceMonitorService) ListRunEvidence(ctx context.Context, runID
 }
 
 func (s *UpstreamPriceMonitorService) ApplyRun(ctx context.Context, runID int64, snapshotHash string) (*domain.UpstreamPriceMonitorRun, error) {
-	if s == nil || s.repo == nil || runID <= 0 || strings.TrimSpace(snapshotHash) == "" {
-		return nil, ErrUpstreamPriceRunNotApplicable
-	}
-	run, err := s.repo.GetRun(ctx, runID)
-	if err != nil {
-		return nil, err
-	}
-	// Observe mode is a hard no-write boundary, including the explicit
-	// administrator Apply action. Review and auto_apply both produce an
-	// actionable plan; only auto_apply executes it without a human click.
-	cfg, err := s.repo.GetConfig(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if cfg == nil || cfg.Mode == domain.UpstreamPriceMonitorModeObserve {
-		return nil, ErrUpstreamPriceRunNotApplicable
-	}
-	scope, ok := ReadUpstreamPriceRunApplyScope(run)
-	if !ok {
-		return nil, ErrUpstreamPriceRunNotApplicable
-	}
-	currentAccounts, err := s.loadDistinctUpstreamPriceMonitorAccounts(ctx, scope.AccountIDs)
-	if err != nil {
-		return nil, err
-	}
-	for _, accountID := range scope.AccountIDs {
-		if UpstreamPriceCredentialLedgerHash(currentAccounts[accountID]) != scope.AccountLedgerHashes[accountID] ||
-			UpstreamPriceAccountIdentityHash(currentAccounts[accountID]) != scope.AccountIdentityHashes[accountID] {
-			return nil, ErrUpstreamPriceSnapshotMismatch
-		}
-	}
-	if err := s.repo.ApplyRun(ctx, runID, strings.TrimSpace(snapshotHash), scope.ChannelIDs, scope.AccountIDs,
-		scope.DisplayMultiplierDecimals, scope.MaxAgeMinutes, scope.ConfigUpdatedAt, scope.ModelCatalogRevision); err != nil {
-		return nil, err
-	}
-	applied, err := s.repo.GetRun(ctx, runID)
-	if err != nil {
-		return nil, err
-	}
-	appliedModels, _ := upstreamPriceSummaryInt(applied.Summary["applied_models"])
-	if appliedModels > 0 && s.cacheInvalidator != nil {
-		s.cacheInvalidator.InvalidatePricingCache()
-	}
-	s.notifyRun(ctx, applied, UpstreamPriceMonitorNotificationApplied, "")
-	return applied, nil
+	// Paid synthetic probes are audit evidence only. Public-page price
+	// authority uses its own sync/apply boundary; no mode, including the legacy
+	// auto_apply value, can turn a probe run into a channel/display write.
+	return nil, ErrUpstreamPriceRunNotApplicable
 }
 
 func (s *UpstreamPriceMonitorService) RollbackRun(ctx context.Context, runID int64, snapshotHash string) (*domain.UpstreamPriceMonitorRun, error) {
@@ -498,7 +465,7 @@ func normalizeAndValidateUpstreamPriceMonitorConfig(cfg *domain.UpstreamPriceMon
 		return ErrUpstreamPriceMonitorInvalidConfig
 	}
 	if !cfg.ActiveOnly || cfg.ActiveProbeMaxRequests < 1 || cfg.ActiveProbeMaxRequests > 7 ||
-		cfg.ActiveProbeMaxModels < 1 || cfg.ActiveProbeMaxModels > len(domain.DefaultX5M5XDomesticModels) ||
+		cfg.ActiveProbeMaxModels < 1 || cfg.ActiveProbeMaxModels > 3 ||
 		!validPositiveProbeBudget(cfg.ActiveProbeRunBudgetUSD) ||
 		!validPositiveProbeBudget(cfg.ActiveProbeDailyBudgetUSD) ||
 		cfg.ActiveProbeRunBudgetUSD > 0.15 || cfg.ActiveProbeDailyBudgetUSD > 0.40 ||
@@ -563,12 +530,11 @@ func normalizeDomesticModelAllowlist(models []string) ([]string, error) {
 		if trimmed == "" || len(trimmed) > 255 || strings.ContainsAny(trimmed, " \t\r\n,") {
 			return nil, ErrUpstreamPriceMonitorInvalidConfig
 		}
-		canonical := trimmed
 		known, ok := allowed[strings.ToLower(trimmed)]
 		if !ok {
 			return nil, ErrUpstreamPriceMonitorInvalidConfig
 		}
-		canonical = known
+		canonical := known
 		key := strings.ToLower(canonical)
 		if _, exists := seen[key]; exists {
 			continue
@@ -846,7 +812,7 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 		Trigger:   options.Trigger,
 		Status:    domain.UpstreamPriceMonitorRunStatusRunning,
 		Mode:      cfg.Mode,
-		DryRun:    options.DryRun || cfg.Mode == domain.UpstreamPriceMonitorModeObserve,
+		DryRun:    true,
 		StartedAt: s.now().UTC(),
 	}
 	if err := s.repo.CreateRun(ctx, run); err != nil {
@@ -897,9 +863,19 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 	} else {
 		dailyCostBeforeRun = runtime.TodayProbeCost
 	}
+	probeModels := cfg.DomesticModels
+	if rotation, ok := s.repo.(upstreamPriceProbeRotationRepository); ok {
+		selected, selectionErr := rotation.SelectActiveProbeModels(ctx, cfg.DomesticModels, cfg.ActiveProbeMaxModels)
+		if selectionErr != nil {
+			runErrors = append(runErrors, "select rotating active probe scope: "+selectionErr.Error())
+			probeModels = nil
+		} else {
+			probeModels = selected
+		}
+	}
 	budget := newUpstreamPriceProbeBudget(cfg, dailyCostBeforeRun)
 	assignments, unavailableModels := assignUpstreamPriceProbeModels(
-		cfg.AccountIDs, cfg.DomesticModels, modelAvailability, cfg.ActiveProbeMaxModels,
+		cfg.AccountIDs, probeModels, modelAvailability, cfg.ActiveProbeMaxModels,
 	)
 	expectedProbeModels := 0
 	for _, models := range assignments {
@@ -969,7 +945,8 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 		run.SnapshotHash = upstreamPriceEvidenceHash(evidence)
 		evidenceProbeCost := 0.0
 		for _, item := range evidence {
-			if item.Source == domain.UpstreamPriceEvidenceSourceActiveProbe {
+			if item.Source == domain.UpstreamPriceEvidenceSourceActiveProbe &&
+				item.ReconciliationStatus != domain.UpstreamPriceReconciliationBaseline {
 				evidenceProbeCost += math.Max(0, item.RemoteDelta.ActualCost)
 			}
 			if item.Source != domain.UpstreamPriceEvidenceSourceActiveProbe || item.BillingMode != DisplayBillingModeToken ||
@@ -988,10 +965,15 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 		run.MatchedModels = len(trustedModelNames)
 		run.MismatchedModels = len(failedModelNames)
 	}
+	trustedModels := sortedUpstreamPriceModelNames(trustedModelNames)
+	failedModels := sortedUpstreamPriceModelNames(failedModelNames)
+	if len(failedModels) > 0 && len(runErrors) == 0 {
+		runErrors = append(runErrors, "active audit did not produce trusted evidence for: "+strings.Join(failedModels, ", "))
+	}
 	finished := s.now().UTC()
 	run.FinishedAt = &finished
 	switch {
-	case len(runErrors) == 0:
+	case len(runErrors) == 0 && len(failedModelNames) == 0:
 		run.Status = domain.UpstreamPriceMonitorRunStatusCompleted
 	case len(evidence) > 0:
 		run.Status = domain.UpstreamPriceMonitorRunStatusPartial
@@ -1006,8 +988,6 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 		accountLedgerHashes[key] = UpstreamPriceCredentialLedgerHash(account)
 		accountIdentityHashes[key] = UpstreamPriceAccountIdentityHash(account)
 	}
-	trustedModels := sortedUpstreamPriceModelNames(trustedModelNames)
-	failedModels := sortedUpstreamPriceModelNames(failedModelNames)
 	run.Summary = map[string]any{
 		"accounts": len(cfg.AccountIDs), "models": len(cfg.DomesticModels), "per_request_models": len(cfg.PerRequestModels), "observe_only": run.DryRun,
 		"account_ids":                  append([]int64(nil), cfg.AccountIDs...),
@@ -1021,6 +1001,7 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 		"active_only":                  true,
 		"probe_models_attempted":       budget.modelsStarted,
 		"probe_models_planned":         expectedProbeModels,
+		"probe_models_selected":        append([]string(nil), probeModels...),
 		"probe_max_requests_per_model": cfg.ActiveProbeMaxRequests,
 		"probe_run_budget_usd":         cfg.ActiveProbeRunBudgetUSD,
 		"probe_daily_budget_usd":       cfg.ActiveProbeDailyBudgetUSD,
@@ -1032,28 +1013,10 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 	if finishErr := s.repo.FinishRun(finalizeCtx, run); finishErr != nil {
 		return run, fmt.Errorf("finish upstream price monitor run: %w", finishErr)
 	}
-	if shouldAutoApplyUpstreamPriceRun(run, cfg) {
-		// The probe loop may consume nearly all of its caller deadline. Once the
-		// durable snapshot is complete, give the atomic apply its own bounded
-		// context so cancellation cannot strand an approved auto_apply plan.
-		applyCtx, cancelApply := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		applied, applyErr := s.ApplyRun(applyCtx, run.ID, run.SnapshotHash)
-		cancelApply()
-		if applyErr != nil {
-			message := "automatic price apply failed: " + applyErr.Error()
-			failureCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = s.repo.MarkApplyFailure(failureCtx, run.ID, message)
-			cancel()
-			run.Status = domain.UpstreamPriceMonitorRunStatusPartial
-			run.Error = message
-			s.notifyRun(ctx, run, UpstreamPriceMonitorNotificationApplyFailed, message)
-			return run, applyErr
-		}
-		return applied, nil
-	}
 	if run.Status == domain.UpstreamPriceMonitorRunStatusPartial {
 		s.notifyRun(ctx, run, UpstreamPriceMonitorNotificationPartial, run.Error)
-	} else if run.Status == domain.UpstreamPriceMonitorRunStatusCompleted && options.Trigger == domain.UpstreamPriceMonitorRunTriggerManual {
+	} else if run.Status == domain.UpstreamPriceMonitorRunStatusCompleted &&
+		options.Trigger == domain.UpstreamPriceMonitorRunTriggerManual {
 		s.notifyRun(ctx, run, UpstreamPriceMonitorNotificationSuggested, "")
 	}
 	if run.Status == domain.UpstreamPriceMonitorRunStatusFailed {
@@ -1064,8 +1027,7 @@ func (s *UpstreamPriceMonitorService) RunOnce(ctx context.Context, options Upstr
 }
 
 func shouldAutoApplyUpstreamPriceRun(run *domain.UpstreamPriceMonitorRun, cfg *domain.UpstreamPriceMonitorConfig) bool {
-	return run != nil && cfg != nil && run.Status == domain.UpstreamPriceMonitorRunStatusCompleted &&
-		run.MatchedModels > 0 && !run.DryRun && cfg.Mode == domain.UpstreamPriceMonitorModeAutoApply
+	return false
 }
 
 func sameUpstreamPriceNonModelConfig(a, b *domain.UpstreamPriceMonitorConfig) bool {
@@ -1099,6 +1061,7 @@ func sameUpstreamPriceNonModelConfig(a, b *domain.UpstreamPriceMonitorConfig) bo
 	return true
 }
 
+//nolint:unused // Retained for backward-compatible reconciliation of legacy paid-probe evidence.
 func (s *UpstreamPriceMonitorService) reconcileAccount(
 	ctx context.Context,
 	runID int64,
@@ -1256,12 +1219,7 @@ func (s *UpstreamPriceMonitorService) reconcileAccount(
 		if obsErr != nil {
 			errs = append(errs, model+": observations: "+obsErr.Error())
 		} else {
-			observations = append(observations, domain.UpstreamPriceObservation{
-				Requests:    remoteDelta.Requests,
-				InputTokens: remoteDelta.InputTokens, OutputTokens: remoteDelta.OutputTokens,
-				CacheCreationTokens: remoteDelta.CacheCreationTokens, CacheReadTokens: remoteDelta.CacheReadTokens,
-				ActualCost: remoteDelta.ActualCost,
-			})
+			observations = append(observations, domain.UpstreamPriceObservation(remoteDelta))
 			prices, sampleCount, solveErr := SolveUpstreamTokenPrices(observations)
 			evidence.SampleCount = sampleCount
 			if solveErr == nil && billing != nil {
@@ -1282,6 +1240,7 @@ func (s *UpstreamPriceMonitorService) reconcileAccount(
 	return matched, mismatched, errors.Join(stringErrors(errs)...)
 }
 
+//nolint:unused // Retained with the legacy active-probe worker implementation below.
 type upstreamPriceActiveProbeResult struct {
 	probed bool
 	cost   float64
@@ -1617,6 +1576,7 @@ func missingUpstreamPriceProbeModels(
 	return missing
 }
 
+//nolint:unused // Retained for manually recovering legacy active-probe monitor runs.
 func (s *UpstreamPriceMonitorService) probeMissingUpstreamPriceModels(
 	ctx context.Context,
 	runID int64,
@@ -1916,12 +1876,7 @@ func (s *UpstreamPriceMonitorService) probeOneUpstreamPriceModel(
 		if recordErr != nil {
 			return len(observations) > 0, probeCost, recordErr
 		}
-		observations = append(observations, domain.UpstreamPriceObservation{
-			Requests:    remoteDelta.Requests,
-			InputTokens: remoteDelta.InputTokens, OutputTokens: remoteDelta.OutputTokens,
-			CacheCreationTokens: remoteDelta.CacheCreationTokens, CacheReadTokens: remoteDelta.CacheReadTokens,
-			ActualCost: remoteDelta.ActualCost,
-		})
+		observations = append(observations, domain.UpstreamPriceObservation(remoteDelta))
 		if sendErr != nil {
 			notes = append(notes, "probe response failed after one attributable ledger charge: "+sendErr.Error())
 		}
@@ -2572,6 +2527,7 @@ func upstreamPriceEvidenceHash(evidence []domain.UpstreamPriceEvidence) string {
 	return hex.EncodeToString(sum[:])
 }
 
+//nolint:unused // Used only by the retained legacy reconciliation implementation.
 func stringErrors(values []string) []error {
 	out := make([]error, 0, len(values))
 	for _, value := range values {

@@ -494,7 +494,22 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 			pendingReasoning = ""
 			lastTurnReasoning = ""
 			continue
-		case "input_image":
+		case "input_image", "input_video", "video_url":
+			content, err := chatContentFromSingleResponsesPart(itemType, item)
+			if err != nil {
+				return nil, nil, err
+			}
+			messages = append(messages, ChatMessage{Role: "user", Content: content})
+			pendingReasoning = ""
+			lastTurnReasoning = ""
+			continue
+		case "input_file":
+			// Responses also allows files as top-level input items. Only an
+			// explicitly identifiable MP4 has a Chat equivalent; ordinary files
+			// keep the existing fail-safe behavior and are skipped.
+			if _, ok := responsesPartVideoURL(itemType, item); !ok {
+				continue
+			}
 			content, err := chatContentFromSingleResponsesPart(itemType, item)
 			if err != nil {
 				return nil, nil, err
@@ -921,6 +936,26 @@ func responsesContentPartsToChatContent(rawParts []json.RawMessage, role string)
 				Type:     "image_url",
 				ImageURL: &ChatImageURL{URL: imageURL},
 			})
+		case "input_video", "video_url":
+			videoURL, ok := responsesPartVideoURL(partType, part)
+			if !ok {
+				return nil, fmt.Errorf("%s.video_url is required", partType)
+			}
+			hasNonText = true
+			chatParts = append(chatParts, ChatContentPart{
+				Type:     "video_url",
+				VideoURL: &ChatVideoURL{URL: videoURL},
+			})
+		case "input_file":
+			videoURL, ok := responsesPartVideoURL(partType, part)
+			if !ok {
+				continue
+			}
+			hasNonText = true
+			chatParts = append(chatParts, ChatContentPart{
+				Type:     "video_url",
+				VideoURL: &ChatVideoURL{URL: videoURL},
+			})
 		}
 	}
 
@@ -950,9 +985,103 @@ func chatContentFromSingleResponsesPart(partType string, part map[string]json.Ra
 			Type:     "image_url",
 			ImageURL: &ChatImageURL{URL: imageURL},
 		}})
+	case "input_video", "video_url":
+		videoURL, ok := responsesPartVideoURL(partType, part)
+		if !ok {
+			return nil, fmt.Errorf("%s.video_url is required", partType)
+		}
+		return json.Marshal([]ChatContentPart{{
+			Type:     "video_url",
+			VideoURL: &ChatVideoURL{URL: videoURL},
+		}})
+	case "input_file":
+		videoURL, ok := responsesPartVideoURL(partType, part)
+		if !ok {
+			return json.Marshal("")
+		}
+		return json.Marshal([]ChatContentPart{{
+			Type:     "video_url",
+			VideoURL: &ChatVideoURL{URL: videoURL},
+		}})
 	default:
 		return json.Marshal(rawString(part["text"]))
 	}
+}
+
+// responsesPartVideoURL recognizes the narrow Responses video compatibility
+// surface used by Chat-only upstreams. input_video is explicit. input_file is
+// accepted only when its payload can be identified as MP4, so PDFs and other
+// ordinary files retain the previous skip behavior.
+func responsesPartVideoURL(partType string, part map[string]json.RawMessage) (string, bool) {
+	switch partType {
+	case "input_video", "video_url":
+		videoURL := rawURLString(part["video_url"])
+		return videoURL, strings.TrimSpace(videoURL) != ""
+	case "input_file":
+		declaredMP4 := responsesPartDeclaresMP4(part) || hasMP4PathSuffix(rawString(part["filename"]))
+		fileData := strings.TrimSpace(rawString(part["file_data"]))
+		if fileData != "" {
+			if isMP4DataURI(fileData) {
+				return fileData, true
+			}
+			// Some compatible clients send bare base64 plus an explicit MIME
+			// field. Canonicalize it so the final Chat media bridge can validate
+			// and materialize the same data-URI shape as native Chat clients.
+			if declaredMP4 && !hasDataURIPrefix(fileData) {
+				return "data:video/mp4;base64," + fileData, true
+			}
+		}
+
+		fileURL := strings.TrimSpace(rawURLString(part["file_url"]))
+		if fileURL == "" {
+			return "", false
+		}
+		if isMP4DataURI(fileURL) || declaredMP4 || hasMP4PathSuffix(fileURL) || hasMP4PathSuffix(rawString(part["filename"])) {
+			return fileURL, true
+		}
+	}
+	return "", false
+}
+
+func rawURLString(raw json.RawMessage) string {
+	if value := rawString(raw); value != "" {
+		return value
+	}
+	return rawNestedString(raw, "url")
+}
+
+func responsesPartDeclaresMP4(part map[string]json.RawMessage) bool {
+	for _, field := range []string{"mime_type", "media_type", "content_type"} {
+		if strings.EqualFold(strings.TrimSpace(rawString(part[field])), "video/mp4") {
+			return true
+		}
+	}
+	return false
+}
+
+func isMP4DataURI(value string) bool {
+	value = strings.TrimSpace(value)
+	comma := strings.IndexByte(value, ',')
+	if comma < 0 || !hasDataURIPrefix(value) {
+		return false
+	}
+	header := value[len("data:"):comma]
+	if semicolon := strings.IndexByte(header, ';'); semicolon >= 0 {
+		header = header[:semicolon]
+	}
+	return strings.EqualFold(strings.TrimSpace(header), "video/mp4")
+}
+
+func hasDataURIPrefix(value string) bool {
+	return len(value) >= len("data:") && strings.EqualFold(value[:len("data:")], "data:")
+}
+
+func hasMP4PathSuffix(value string) bool {
+	value = strings.TrimSpace(value)
+	if query := strings.IndexAny(value, "?#"); query >= 0 {
+		value = value[:query]
+	}
+	return len(value) >= len(".mp4") && strings.EqualFold(value[len(value)-len(".mp4"):], ".mp4")
 }
 
 // customToolInputSchema 是 custom/freeform 工具降级为 function 工具时的参数 schema。
@@ -1403,26 +1532,24 @@ func ChatUsageToResponsesUsage(usage *ChatUsage) *ResponsesUsage {
 	if usage == nil {
 		return nil
 	}
+	inputTokens, _, cacheReadTokens, cacheCreationTokens := chatPromptUsageBuckets(usage)
 	out := &ResponsesUsage{
-		InputTokens:  usage.PromptTokens,
+		InputTokens:  inputTokens,
 		OutputTokens: usage.CompletionTokens,
 		TotalTokens:  usage.TotalTokens,
 	}
 	if out.TotalTokens == 0 {
 		out.TotalTokens = out.InputTokens + out.OutputTokens
 	}
-	if usage.PromptTokensDetails != nil && (usage.PromptTokensDetails.CachedTokens > 0 ||
-		usage.PromptTokensDetails.CacheCreationTokens > 0 || usage.PromptTokensDetails.CacheWriteTokens > 0) {
+	if cacheReadTokens > 0 || cacheCreationTokens > 0 {
 		out.InputTokensDetails = &ResponsesInputTokensDetails{
-			CachedTokens:        usage.PromptTokensDetails.CachedTokens,
-			CacheCreationTokens: usage.PromptTokensDetails.CacheCreationTokens,
-			CacheWriteTokens:    usage.PromptTokensDetails.CacheWriteTokens,
+			CachedTokens: cacheReadTokens,
 		}
-		if usage.PromptTokensDetails.CacheWriteTokens > 0 {
-			out.CacheCreationInputTokens = usage.PromptTokensDetails.CacheWriteTokens
-		} else {
-			out.CacheCreationInputTokens = usage.PromptTokensDetails.CacheCreationTokens
+		if usage.PromptTokensDetails != nil {
+			out.InputTokensDetails.CacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokens
+			out.InputTokensDetails.CacheWriteTokens = usage.PromptTokensDetails.CacheWriteTokens
 		}
+		out.CacheCreationInputTokens = cacheCreationTokens
 	}
 	return out
 }

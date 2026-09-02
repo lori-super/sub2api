@@ -260,8 +260,9 @@ func TestActiveProbeStopsCurrentModelImmediatelyAfterSettledSampleExhaustsBudget
 	require.InDelta(t, budget.runSpent, repo.progressCosts[0], 1e-12)
 }
 
-func TestRefreshProbeBudgetUsesRecoveredPendingSpendBeforeNewProbe(t *testing.T) {
+func TestRefreshProbeBudgetUsesPersistedActualProbeSpendBeforeNewProbe(t *testing.T) {
 	cfg := domain.DefaultUpstreamPriceMonitorConfig()
+	cfg.ActiveProbeDailyBudgetUSD = 0.20
 	budget := newUpstreamPriceProbeBudget(&cfg, 0.05)
 	repo := &activeProbeTestRepository{runtimeCost: 0.20}
 	svc := NewUpstreamPriceMonitorService(repo, nil, nil)

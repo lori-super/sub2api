@@ -1786,7 +1786,7 @@ func sleepGeminiBackoff(attempt int) {
 }
 
 var (
-	sensitiveQueryParamRegex = regexp.MustCompile(`(?i)([?&](?:key|client_secret|access_token|refresh_token)=)[^&"\s]+`)
+	sensitiveQueryParamRegex = regexp.MustCompile(`(?i)((?:[?&]|\\u0026|&amp;)(?:key|client_secret|access_token|refresh_token|x-amz-credential|x-amz-signature|x-amz-security-token)=)[^&"\\\s]+`)
 	retryInRegex             = regexp.MustCompile(`Please retry in ([0-9.]+)s`)
 )
 

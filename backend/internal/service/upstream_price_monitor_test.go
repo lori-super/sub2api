@@ -19,7 +19,7 @@ func TestDefaultUpstreamPriceMonitorConfigIsDisabledObserveOnly(t *testing.T) {
 	require.InDelta(t, 1.20, cfg.Markup, 1e-12)
 	require.True(t, cfg.ActiveOnly)
 	require.Equal(t, 7, cfg.ActiveProbeMaxRequests)
-	require.Equal(t, 19, cfg.ActiveProbeMaxModels)
+	require.Equal(t, 3, cfg.ActiveProbeMaxModels)
 	require.InDelta(t, 0.15, cfg.ActiveProbeRunBudgetUSD, 1e-12)
 	require.InDelta(t, 0.40, cfg.ActiveProbeDailyBudgetUSD, 1e-12)
 	require.Len(t, cfg.DomesticModels, 19)
@@ -46,7 +46,7 @@ func TestNormalizeUpstreamPriceMonitorConfigEnforcesActiveSafetyCaps(t *testing.
 		"markup":             func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.Markup = 1.21 },
 		"active only":        func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveOnly = false },
 		"requests":           func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveProbeMaxRequests = 8 },
-		"models":             func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveProbeMaxModels = 20 },
+		"models":             func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveProbeMaxModels = 4 },
 		"run budget":         func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveProbeRunBudgetUSD = 0.151 },
 		"daily budget":       func(cfg *domain.UpstreamPriceMonitorConfig) { cfg.ActiveProbeDailyBudgetUSD = 0.401 },
 		"budget ordering": func(cfg *domain.UpstreamPriceMonitorConfig) {
@@ -230,27 +230,27 @@ func TestActiveProbeBudgetStopsBeforeStartingAnotherModel(t *testing.T) {
 	require.Contains(t, daily.stopReason(), "daily budget reached")
 }
 
-func TestActiveProbeAssignmentIsUniqueAndCappedAtNineteen(t *testing.T) {
+func TestActiveProbeAssignmentIsUniqueAndCappedAtThree(t *testing.T) {
 	availability := map[int64]map[string]struct{}{1: {}, 2: {}}
 	for index, model := range domain.DefaultX5M5XDomesticModels {
 		accountID := int64(1 + index%2)
 		availability[accountID][strings.ToLower(model)] = struct{}{}
 	}
 	assignments, unavailable := assignUpstreamPriceProbeModels(
-		[]int64{1, 2}, domain.DefaultX5M5XDomesticModels, availability, 19,
+		[]int64{1, 2}, domain.DefaultX5M5XDomesticModels, availability, 3,
 	)
 	require.Empty(t, unavailable)
-	require.Len(t, assignments[1], 10)
-	require.Len(t, assignments[2], 9)
+	require.Len(t, assignments[1], 2)
+	require.Len(t, assignments[2], 1)
 }
 
-func TestScheduledAutoApplyAcceptsTrustedSubsetButSkipsZeroCoverage(t *testing.T) {
+func TestPaidProbeRunNeverAutoAppliesInAnyMode(t *testing.T) {
 	cfg := domain.DefaultUpstreamPriceMonitorConfig()
 	cfg.Mode = domain.UpstreamPriceMonitorModeAutoApply
 	run := &domain.UpstreamPriceMonitorRun{
 		Status: domain.UpstreamPriceMonitorRunStatusCompleted, MatchedModels: 16, MismatchedModels: 3,
 	}
-	require.True(t, shouldAutoApplyUpstreamPriceRun(run, &cfg))
+	require.False(t, shouldAutoApplyUpstreamPriceRun(run, &cfg))
 	run.MatchedModels = 0
 	require.False(t, shouldAutoApplyUpstreamPriceRun(run, &cfg))
 	run.MatchedModels = 16

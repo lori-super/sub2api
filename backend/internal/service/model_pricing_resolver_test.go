@@ -266,6 +266,48 @@ func TestResolve_WithChannelOverride_TokenFlat(t *testing.T) {
 	require.Zero(t, resolved.BasePricing.OutputPricePerTokenPriority)
 }
 
+func TestResolve_DeepSeekUndatedAliasUsesVersionedChannelPricing(t *testing.T) {
+	const groupID = 100
+	repo := &mockChannelRepository{
+		listAllFn: func(_ context.Context) ([]Channel, error) {
+			return []Channel{
+				{
+					ID:       1,
+					Name:     "deepseek-channel",
+					Status:   StatusActive,
+					GroupIDs: []int64{groupID},
+					ModelPricing: []ChannelModelPricing{
+						{
+							ID:          10,
+							Platform:    PlatformOpenAI,
+							Models:      []string{"deepseek-v4-pro-0813"},
+							BillingMode: BillingModeToken,
+							InputPrice:  testPtrFloat64(0.564e-6),
+							OutputPrice: testPtrFloat64(1.668e-6),
+						},
+					},
+				},
+			}, nil
+		},
+		getGroupPlatformsFn: func(_ context.Context, _ []int64) (map[int64]string, error) {
+			return map[int64]string{groupID: PlatformOpenAI}, nil
+		},
+	}
+	resolver := NewModelPricingResolver(NewChannelService(repo, nil, nil, nil), newTestBillingServiceForResolver())
+	groupIDValue := int64(groupID)
+
+	resolved := resolver.Resolve(context.Background(), PricingInput{
+		Model:   "deepseek-v4-pro",
+		GroupID: &groupIDValue,
+	})
+
+	require.NotNil(t, resolved)
+	require.Equal(t, PricingSourceChannel, resolved.Source)
+	require.NotNil(t, resolved.BasePricing)
+	require.InDelta(t, 0.564e-6, resolved.BasePricing.InputPricePerToken, 1e-15)
+	require.InDelta(t, 1.668e-6, resolved.BasePricing.OutputPricePerToken, 1e-15)
+}
+
 func TestResolve_WithChannelOverride_TokenPartialOverride(t *testing.T) {
 	// Channel only sets InputPrice; OutputPrice should remain from the base (LiteLLM/fallback).
 	r := newResolverWithChannel(t, []ChannelModelPricing{{

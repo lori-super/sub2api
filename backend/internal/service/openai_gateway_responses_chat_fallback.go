@@ -17,6 +17,36 @@ import (
 	"go.uber.org/zap"
 )
 
+type openAIResponsesFallbackClientError struct {
+	cause error
+}
+
+func (e *openAIResponsesFallbackClientError) Error() string {
+	if e == nil || e.cause == nil {
+		return "invalid Responses request"
+	}
+	return e.cause.Error()
+}
+
+func (e *openAIResponsesFallbackClientError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func newOpenAIResponsesFallbackClientError(cause error) error {
+	return &openAIResponsesFallbackClientError{cause: cause}
+}
+
+// IsOpenAIResponsesFallbackClientError reports a local request-validation
+// failure that has already been written in Responses wire format. Such errors
+// are attributable to the request, not to the selected upstream account.
+func IsOpenAIResponsesFallbackClientError(err error) bool {
+	var target *openAIResponsesFallbackClientError
+	return errors.As(err, &target)
+}
+
 // forwardResponsesViaRawChatCompletions serves /v1/responses clients through an
 // upstream that only supports /v1/chat/completions.
 func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
@@ -27,16 +57,29 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 ) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
 	upstreamCacheIdentity := x5M5XCacheIdentity(c, account, body)
+	// Materialize Responses inline video before decoding the full protocol
+	// request. Keeping the large base64 value out of json.Unmarshal and the
+	// Responses -> Chat conversion avoids several request-sized copies.
+	preMaterializeModel := newOpenAIRequestView(body).Model
+	if preMaterializeModel != "" {
+		billingModel := resolveOpenAIForwardModel(account, preMaterializeModel, "")
+		upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+		var err error
+		body, _, err = s.materializeResponsesVideoDataURLs(ctx, c, account, upstreamModel, body)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	var responsesReq apicompat.ResponsesRequest
 	if err := json.Unmarshal(body, &responsesReq); err != nil {
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
-		return nil, fmt.Errorf("parse responses request: %w", err)
+		return nil, newOpenAIResponsesFallbackClientError(fmt.Errorf("parse responses request: %w", err))
 	}
 	originalModel := strings.TrimSpace(responsesReq.Model)
 	if originalModel == "" {
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
-		return nil, fmt.Errorf("missing model in request")
+		return nil, newOpenAIResponsesFallbackClientError(errors.New("missing model in request"))
 	}
 
 	clientStream := responsesReq.Stream
@@ -47,7 +90,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	effectiveTools, err := apicompat.EffectiveResponsesTools(&responsesReq)
 	if err != nil {
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return nil, fmt.Errorf("resolve responses tools: %w", err)
+		return nil, newOpenAIResponsesFallbackClientError(fmt.Errorf("resolve responses tools: %w", err))
 	}
 	customTools := apicompat.CustomToolNames(effectiveTools)
 	functionTools := apicompat.FunctionToolNames(effectiveTools)
@@ -63,7 +106,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	})
 	if err != nil {
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return nil, fmt.Errorf("convert responses to chat completions: %w", err)
+		return nil, newOpenAIResponsesFallbackClientError(fmt.Errorf("convert responses to chat completions: %w", err))
 	}
 
 	billingModel := resolveOpenAIForwardModel(account, originalModel, "")

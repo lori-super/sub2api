@@ -34,7 +34,7 @@ func TestUpstreamPriceMonitorRuntimeManualRunDoesNotPostponeSchedule(t *testing.
 		WillReturnRows(sqlmock.NewRows([]string{"started_at"}).AddRow(scheduledAt))
 	mock.ExpectQuery(`SELECT status FROM upstream_price_monitor_runs`).
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow(string(domain.UpstreamPriceMonitorRunStatusCompleted)))
-	mock.ExpectQuery(`SELECT COALESCE\(SUM`).
+	mock.ExpectQuery(`SELECT COALESCE\(SUM.*WHERE source='active_probe' AND reconciliation_status<>'baseline' AND created_at >= CURRENT_DATE`).
 		WillReturnRows(sqlmock.NewRows([]string{"cost"}).AddRow(0.01))
 	mock.ExpectQuery(`SELECT COALESCE\(MAX`).
 		WillReturnRows(sqlmock.NewRows([]string{"cost"}).AddRow(0.0))
@@ -46,6 +46,7 @@ func TestUpstreamPriceMonitorRuntimeManualRunDoesNotPostponeSchedule(t *testing.
 	require.NoError(t, err)
 	require.Equal(t, manualAt, *runtime.LastRunAt)
 	require.Equal(t, scheduledAt.Add(360*time.Minute), *runtime.NextRunAt)
+	require.InDelta(t, 0.01, runtime.TodayProbeCost, 1e-12)
 	require.InDelta(t, 0.39, runtime.RemainingDailyProbeBudgetUSD, 1e-12)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

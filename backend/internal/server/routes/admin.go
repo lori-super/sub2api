@@ -74,7 +74,7 @@ func RegisterAdminRoutes(
 		registerPromoCodeRoutes(admin, h)
 
 		// 系统设置
-		registerSettingsRoutes(admin, h)
+		registerSettingsRoutes(admin, h, stepUpAuth)
 
 		// 数据管理
 		registerDataManagementRoutes(admin, h, stepUpAuth)
@@ -115,8 +115,7 @@ func RegisterAdminRoutes(
 		// 渠道管理
 		registerChannelRoutes(admin, h)
 
-		// 仅影响用户可见页面的展示定价，不影响真实渠道和扣费。
-		registerDisplayPricingRoutes(admin, h)
+		registerDisplayPricingRoutes(admin, h, stepUpAuth)
 		registerUpstreamPriceMonitorRoutes(admin, h, stepUpAuth)
 
 		// 渠道监控
@@ -158,7 +157,11 @@ func registerUpstreamPriceMonitorRoutes(
 	}
 }
 
-func registerDisplayPricingRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerDisplayPricingRoutes(
+	admin *gin.RouterGroup,
+	h *handler.Handlers,
+	stepUpAuth middleware.StepUpAuthMiddleware,
+) {
 	pricing := admin.Group("/display-pricing")
 	{
 		pricing.GET("/settings", h.Admin.DisplayPricing.GetSettings)
@@ -174,7 +177,7 @@ func registerDisplayPricingRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		pricing.GET("/discovered-models", h.Admin.DisplayPricing.ListDiscoveredModels)
 		pricing.POST("/official-sync/preview", h.Admin.DisplayPricing.PreviewOfficialPrices)
 		pricing.POST("/official-sync/apply", h.Admin.DisplayPricing.ApplyOfficialPrices)
-		pricing.POST("/upstream-token-sync", h.Admin.DisplayPricing.SyncUpstreamTokenDisplayPrices)
+		pricing.POST("/upstream-token-sync", gin.HandlerFunc(stepUpAuth), h.Admin.UpstreamPriceMonitor.SyncTokenPrices)
 	}
 }
 
@@ -597,7 +600,11 @@ func registerPromoCodeRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	}
 }
 
-func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerSettingsRoutes(
+	admin *gin.RouterGroup,
+	h *handler.Handlers,
+	stepUpAuth middleware.StepUpAuthMiddleware,
+) {
 	adminSettings := admin.Group("/settings")
 	{
 		adminSettings.GET("", h.Admin.Setting.GetSettings)
@@ -625,6 +632,11 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// 面板 API 限流配置
 		adminSettings.GET("/panel-rate-limit", h.Admin.Setting.GetPanelRateLimitSettings)
 		adminSettings.PUT("/panel-rate-limit", h.Admin.Setting.UpdatePanelRateLimitSettings)
+		// Base64 媒体转临时 URL 的热更新策略与独立加密 R2 凭据。
+		adminSettings.GET("/media-bridge", h.Admin.Setting.GetMediaBridgeSettings)
+		adminSettings.PUT("/media-bridge", h.Admin.Setting.UpdateMediaBridgeSettings)
+		adminSettings.PUT("/media-bridge/storage", gin.HandlerFunc(stepUpAuth), h.Admin.Setting.UpdateMediaBridgeStorage)
+		adminSettings.POST("/media-bridge/storage/test", gin.HandlerFunc(stepUpAuth), h.Admin.Setting.TestMediaBridgeStorage)
 		// 流超时处理配置
 		adminSettings.GET("/stream-timeout", h.Admin.Setting.GetStreamTimeoutSettings)
 		adminSettings.PUT("/stream-timeout", h.Admin.Setting.UpdateStreamTimeoutSettings)

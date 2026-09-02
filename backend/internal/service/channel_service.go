@@ -428,10 +428,16 @@ func (c *channelCache) matchWildcardMapping(groupID int64, platform, modelLower 
 // 各平台严格独立，只在本平台内查找（先精确匹配，再通配符）。
 func lookupPricingAcrossPlatforms(cache *channelCache, groupID int64, groupPlatform, modelLower string) *ChannelModelPricing {
 	modelLower = normalizeChannelPricingModelName(modelLower)
-	for _, p := range matchingPlatforms(groupPlatform) {
-		key := channelModelKey{groupID: groupID, platform: p, model: modelLower}
-		if pricing, ok := cache.pricingByGroupModel[key]; ok {
-			return pricing
+	modelCandidates := []string{modelLower}
+	if versioned := deepSeekVersionedModelForUndatedAlias(modelLower); versioned != "" {
+		modelCandidates = append(modelCandidates, versioned)
+	}
+	for _, candidate := range modelCandidates {
+		for _, p := range matchingPlatforms(groupPlatform) {
+			key := channelModelKey{groupID: groupID, platform: p, model: candidate}
+			if pricing, ok := cache.pricingByGroupModel[key]; ok {
+				return pricing
+			}
 		}
 	}
 	// 精确查找全部失败，依次尝试通配符匹配
@@ -446,10 +452,17 @@ func lookupPricingAcrossPlatforms(cache *channelCache, groupID int64, groupPlatf
 // lookupMappingAcrossPlatforms 在分组平台内查找模型映射。
 // 逻辑与 lookupPricingAcrossPlatforms 相同：先精确查找，再通配符。
 func lookupMappingAcrossPlatforms(cache *channelCache, groupID int64, groupPlatform, modelLower string) string {
-	for _, p := range matchingPlatforms(groupPlatform) {
-		key := channelModelKey{groupID: groupID, platform: p, model: modelLower}
-		if mapped, ok := cache.mappingByGroupModel[key]; ok {
-			return mapped
+	modelLower = strings.ToLower(strings.TrimSpace(modelLower))
+	modelCandidates := []string{modelLower}
+	if versioned := deepSeekVersionedModelForUndatedAlias(modelLower); versioned != "" {
+		modelCandidates = append(modelCandidates, versioned)
+	}
+	for _, candidate := range modelCandidates {
+		for _, p := range matchingPlatforms(groupPlatform) {
+			key := channelModelKey{groupID: groupID, platform: p, model: candidate}
+			if mapped, ok := cache.mappingByGroupModel[key]; ok {
+				return mapped
+			}
 		}
 	}
 	for _, p := range matchingPlatforms(groupPlatform) {

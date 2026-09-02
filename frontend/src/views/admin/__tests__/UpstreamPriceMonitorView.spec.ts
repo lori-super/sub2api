@@ -52,7 +52,7 @@ const config = {
   passive_sample_max_age_minutes: 1440,
   active_probe_enabled: true,
   active_only: true,
-  active_probe_max_models_per_run: 19,
+  active_probe_max_models_per_run: 3,
   active_probe_max_requests_per_model: 7,
   active_probe_run_budget_usd: 0.15,
   active_probe_daily_budget_usd: 0.20,
@@ -190,18 +190,14 @@ describe('UpstreamPriceMonitorView', () => {
     wrapper.unmount()
   })
 
-  it('requires confirmation and sends the snapshot hash when applying', async () => {
-    api.getConfig.mockResolvedValueOnce({ ...config, mode: 'review' })
-    const wrapper = mountView()
-    await flushPromises()
+  it('never exposes an Apply action for paid probe evidence', async () => {
+	api.getConfig.mockResolvedValueOnce({ ...config, mode: 'review' })
+	const wrapper = mountView()
+	await flushPromises()
 
-    await wrapper.get('[data-testid="apply-latest"]').trigger('click')
-    expect(wrapper.get('[data-testid="confirm-dialog"]').exists()).toBe(true)
-    await wrapper.get('[data-testid="confirm-action"]').trigger('click')
-    await flushPromises()
-
-    expect(api.applyRun).toHaveBeenCalledWith(1, { snapshot_hash: 'abcdef1234567890' })
-    wrapper.unmount()
+	expect(wrapper.find('[data-testid="apply-latest"]').exists()).toBe(false)
+	expect(api.applyRun).not.toHaveBeenCalled()
+	wrapper.unmount()
   })
 
   it('does not expose apply or rollback actions in monitor-only mode', async () => {
@@ -248,7 +244,7 @@ describe('UpstreamPriceMonitorView', () => {
       active_only: true,
       interval_minutes: 1440,
       markup: 1.2,
-      active_probe_max_models_per_run: 19,
+	  active_probe_max_models_per_run: 3,
       active_probe_max_requests_per_model: 7,
       active_probe_run_budget_usd: 0.15,
       active_probe_daily_budget_usd: 0.20,

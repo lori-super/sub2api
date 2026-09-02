@@ -695,9 +695,10 @@ type ChatMessage struct {
 
 // ChatContentPart is a typed content part in a multi-modal message.
 type ChatContentPart struct {
-	Type     string        `json:"type"` // "text" | "image_url" | "file"
+	Type     string        `json:"type"` // "text" | "image_url" | "video_url" | "file"
 	Text     string        `json:"text,omitempty"`
 	ImageURL *ChatImageURL `json:"image_url,omitempty"`
+	VideoURL *ChatVideoURL `json:"video_url,omitempty"`
 	File     *ChatFile     `json:"file,omitempty"`
 }
 
@@ -705,6 +706,11 @@ type ChatContentPart struct {
 type ChatImageURL struct {
 	URL    string `json:"url"`
 	Detail string `json:"detail,omitempty"` // "auto" | "low" | "high"
+}
+
+// ChatVideoURL contains the URL or data URI for a video content part.
+type ChatVideoURL struct {
+	URL string `json:"url"`
 }
 
 // ChatFile contains the payload of a "file" content part (e.g. PDF input).
@@ -779,6 +785,50 @@ type ChatUsage struct {
 	TotalTokens             int               `json:"total_tokens"`
 	PromptTokensDetails     *ChatTokenDetails `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *ChatTokenDetails `json:"completion_tokens_details,omitempty"`
+	// DeepSeek reports cache usage as a top-level hit/miss partition. Pointers
+	// preserve an explicitly reported zero and let protocol bridges distinguish
+	// the vendor extension from an absent field. Bridges emit the corresponding
+	// standard cached_tokens detail instead of copying these aliases onward.
+	PromptCacheHitTokens  *int `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens *int `json:"prompt_cache_miss_tokens,omitempty"`
+}
+
+// chatPromptUsageBuckets normalizes Chat Completions prompt usage into one
+// total and three mutually-exclusive billing buckets. PromptTokens is a total
+// (not an ordinary-input bucket); DeepSeek's miss count is the ordinary bucket
+// and its hit count is the cache-read bucket. Cache-write/creation spellings
+// denote the same bucket and are therefore never added to each other.
+func chatPromptUsageBuckets(usage *ChatUsage) (total, ordinary, cacheRead, cacheCreation int) {
+	if usage == nil {
+		return 0, 0, 0, 0
+	}
+
+	total = max(usage.PromptTokens, 0)
+	if usage.PromptTokensDetails != nil {
+		cacheRead = max(usage.PromptTokensDetails.CachedTokens, 0)
+		if usage.PromptTokensDetails.CacheWriteTokens > 0 {
+			cacheCreation = usage.PromptTokensDetails.CacheWriteTokens
+		} else {
+			cacheCreation = max(usage.PromptTokensDetails.CacheCreationTokens, 0)
+		}
+	}
+	if cacheRead == 0 && usage.PromptCacheHitTokens != nil {
+		cacheRead = max(*usage.PromptCacheHitTokens, 0)
+	}
+
+	if usage.PromptCacheMissTokens != nil {
+		ordinary = max(*usage.PromptCacheMissTokens, 0)
+		if total == 0 {
+			total = cacheRead + ordinary
+		}
+		return total, ordinary, cacheRead, cacheCreation
+	}
+
+	if total == 0 {
+		total = cacheRead + cacheCreation
+	}
+	ordinary = max(total-cacheRead-cacheCreation, 0)
+	return total, ordinary, cacheRead, cacheCreation
 }
 
 // ChatTokenDetails provides a breakdown of token usage. The same type is

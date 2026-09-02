@@ -23,6 +23,7 @@ import (
 func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	streamStarted := false
 	defer h.recoverResponsesPanic(c, &streamStarted)
+	defer h.gatewayService.CleanupOpenAIChatVideoBridgeSession(c)
 
 	requestStart := time.Now()
 
@@ -48,9 +49,15 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	if !h.ensureResponsesDependencies(c, reqLog) {
 		return
 	}
+	if !h.prepareMediaBridgeRequestBody(c) {
+		return
+	}
 
 	body, err := readLenientJSONRequestBodyWithPrealloc(c.Request, h.cfg)
 	if err != nil {
+		if h.handleMediaBridgeRequestBodyError(c, err) {
+			return
+		}
 		if maxErr, ok := extractMaxBytesError(err); ok {
 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
 			return
@@ -65,7 +72,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	}
 
 	if !gjson.ValidBytes(body) {
-		logRequestBodyParseFailure(reqLog, body, nil)
+		logMediaRequestBodyParseFailure(reqLog, body, nil)
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
@@ -305,6 +312,16 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			})
 		}
 		if err != nil {
+			if bridgeErr, ok := service.AsOpenAIChatVideoBridgeError(err); ok {
+				setMediaBridgeRetryAfter(c, bridgeErr)
+				reqLog.Info("openai_chat_completions.video_bridge_failed",
+					zap.Int64("account_id", account.ID),
+					zap.Int("status", bridgeErr.StatusCode),
+					zap.Error(err),
+				)
+				h.handleStreamingAwareError(c, bridgeErr.StatusCode, bridgeErr.Type, bridgeErr.Message, streamStarted)
+				return
+			}
 			if result != nil && result.ImageCount > 0 {
 				reqLog.Warn("openai_chat_completions.forward_partial_error_with_image_result",
 					zap.Int64("account_id", account.ID),
@@ -354,14 +371,17 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 							continue
 						}
 					}
+					consumeSwitchBudget := shouldConsumeOpenAIAccountSwitchBudget(failoverErr)
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
-					if switchCount >= maxAccountSwitches {
-						h.handleFailoverExhausted(c, failoverErr, streamStarted)
-						return
+					if consumeSwitchBudget {
+						if switchCount >= maxAccountSwitches {
+							h.handleFailoverExhausted(c, failoverErr, streamStarted)
+							return
+						}
+						switchCount++
 					}
-					switchCount++
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount, &oauth429FailoverState) {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return

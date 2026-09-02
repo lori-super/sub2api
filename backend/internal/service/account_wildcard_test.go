@@ -345,6 +345,65 @@ func TestAccountGetMappedModel(t *testing.T) {
 	}
 }
 
+func TestAccountDeepSeekUndatedAliases(t *testing.T) {
+	t.Parallel()
+
+	for _, platform := range []string{PlatformOpenAI, PlatformDeepseek} {
+		platform := platform
+		t.Run(platform, func(t *testing.T) {
+			t.Parallel()
+			account := &Account{
+				Platform: platform,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{
+						"deepseek-v4-pro-0813":   "deepseek-v4-pro-0813",
+						"deepseek-v4-flash-0731": "relay/deepseek-flash",
+					},
+				},
+			}
+
+			if !account.IsModelSupported("deepseek-v4-pro") {
+				t.Fatal("undated pro alias must be admitted by the derived account whitelist")
+			}
+			requireMappedModel(t, account, "deepseek-v4-pro", "deepseek-v4-pro-0813")
+			requireMappedModel(t, account, "deepseek-v4-flash", "relay/deepseek-flash")
+		})
+	}
+}
+
+func TestAccountDeepSeekUndatedAliasPreservesExplicitRouting(t *testing.T) {
+	t.Parallel()
+
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"deepseek-v4-pro":      "relay/pro-stable",
+				"deepseek-v4-pro-0813": "relay/pro-0813",
+			},
+		},
+	}
+
+	requireMappedModel(t, account, "deepseek-v4-pro", "relay/pro-stable")
+}
+
+func TestAccountDeepSeekUndatedAliasDoesNotExpandOtherPlatforms(t *testing.T) {
+	t.Parallel()
+
+	account := &Account{
+		Platform: PlatformAnthropic,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"deepseek-v4-pro-0813": "deepseek-v4-pro-0813",
+			},
+		},
+	}
+
+	if account.IsModelSupported("deepseek-v4-pro") {
+		t.Fatal("DeepSeek aliases must not expand unrelated platform whitelists")
+	}
+}
+
 func TestAccountGetModelMapping_AntigravityNormalizesGemini31ProAliases(t *testing.T) {
 	t.Parallel()
 

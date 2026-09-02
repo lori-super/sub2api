@@ -397,8 +397,7 @@ func (s *DisplayPricingService) BuildCatalog(ctx context.Context, groups []Plaza
 		if p.BillingMode == DisplayBillingModeToken && !isDomesticDisplayProvider(p.Provider) {
 			continue
 		}
-		providerKey := d.Provider
-		providerKey = p.Provider
+		providerKey := p.Provider
 		providerCfg, ok := providerByKey[providerKey]
 		if !ok {
 			providerCfg = defaultDisplayProvider(providerKey)

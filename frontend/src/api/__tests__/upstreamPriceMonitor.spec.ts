@@ -31,7 +31,7 @@ describe('upstream price monitor API', () => {
       passive_sample_max_age_minutes: 1440,
       active_probe_enabled: true,
       active_only: true,
-      active_probe_max_models_per_run: 19,
+      active_probe_max_models_per_run: 3,
       active_probe_max_requests_per_model: 7,
       active_probe_run_budget_usd: 0.15,
       active_probe_daily_budget_usd: 0.20,

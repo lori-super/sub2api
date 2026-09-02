@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -95,5 +96,47 @@ func TestShrinkToEssentials_IncludesThinking(t *testing.T) {
 	out := shrinkToEssentials(root)
 	if _, ok := out["thinking"]; !ok {
 		t.Fatalf("expected thinking to be included in essentials: %#v", out)
+	}
+}
+
+func TestSanitizeErrorBodyForStorageRedactsPresignedURLSecrets(t *testing.T) {
+	t.Parallel()
+
+	url := "https://media.example.test/object.mp4?X-Amz-Credential=credential-secret&X-Amz-Signature=signature-secret&X-Amz-Security-Token=token-secret"
+	for _, raw := range []string{
+		`{"error":{"message":"download failed: ` + url + `"}}`,
+		"download failed: " + url,
+	} {
+		out, _ := sanitizeErrorBodyForStorage(raw, 10*1024)
+		for _, secret := range []string{"credential-secret", "signature-secret", "token-secret"} {
+			if strings.Contains(out, secret) {
+				t.Fatalf("expected %q to be redacted from %q", secret, out)
+			}
+		}
+		if !strings.Contains(out, "***") {
+			t.Fatalf("expected redaction marker in %q", out)
+		}
+	}
+}
+
+func TestTruncateForLogRedactsPresignedURLSecretsBeforeTruncation(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := json.Marshal(map[string]any{
+		"error": "failed https://media.example.test/object?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=credential-secret&X-Amz-Signature=signature-secret&X-Amz-Security-Token=token-secret",
+	})
+	if err != nil {
+		t.Fatalf("marshal test body: %v", err)
+	}
+	out := truncateForLog(encoded, 4096)
+	for _, secret := range []string{"credential-secret", "signature-secret", "token-secret"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("expected %q to be redacted: %q", secret, out)
+		}
+	}
+	for _, parameter := range []string{"X-Amz-Credential=***", "X-Amz-Signature=***", "X-Amz-Security-Token=***"} {
+		if !strings.Contains(out, parameter) {
+			t.Fatalf("expected %q in sanitized log body: %q", parameter, out)
+		}
 	}
 }

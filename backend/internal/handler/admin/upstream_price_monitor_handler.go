@@ -50,6 +50,19 @@ func (h *UpstreamPriceMonitorHandler) GetRuntime(c *gin.Context) {
 	response.Success(c, runtime)
 }
 
+// SyncTokenPrices is the manual trigger for the same authoritative public-page
+// transaction used by the runner. Keeping the legacy display-pricing URL while
+// routing it here prevents an administrator action from updating presentation
+// prices without the corresponding real channel prices.
+func (h *UpstreamPriceMonitorHandler) SyncTokenPrices(c *gin.Context) {
+	result, err := h.monitor.SyncTokenPrices(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 func (h *UpstreamPriceMonitorHandler) ListModels(c *gin.Context) {
 	items, err := h.monitor.ListModelCatalog(c.Request.Context())
 	if err != nil {

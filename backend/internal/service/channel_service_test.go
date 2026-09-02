@@ -708,6 +708,48 @@ func TestGetChannelModelPricing_ExactMatch(t *testing.T) {
 	require.InDelta(t, 15e-6, *result.InputPrice, 1e-12)
 }
 
+func TestGetChannelModelPricing_DeepSeekUndatedAliasUsesVersionedPricing(t *testing.T) {
+	ch := Channel{
+		ID:       1,
+		Status:   StatusActive,
+		GroupIDs: []int64{10},
+		ModelPricing: []ChannelModelPricing{
+			{
+				ID:          101,
+				Platform:    PlatformOpenAI,
+				Models:      []string{"deepseek-v4-pro-0813"},
+				BillingMode: BillingModeToken,
+				InputPrice:  testPtrFloat64(0.564e-6),
+			},
+		},
+	}
+	repo := makeStandardRepo(ch, map[int64]string{10: PlatformOpenAI})
+	svc := newTestChannelService(repo)
+
+	result := svc.GetChannelModelPricing(context.Background(), 10, "deepseek-v4-pro")
+	require.NotNil(t, result)
+	require.Equal(t, int64(101), result.ID)
+	require.InDelta(t, 0.564e-6, *result.InputPrice, 1e-15)
+}
+
+func TestGetChannelModelPricing_DeepSeekExplicitUndatedPricingWins(t *testing.T) {
+	ch := Channel{
+		ID:       1,
+		Status:   StatusActive,
+		GroupIDs: []int64{10},
+		ModelPricing: []ChannelModelPricing{
+			{ID: 102, Platform: PlatformOpenAI, Models: []string{"deepseek-v4-pro-0813"}},
+			{ID: 103, Platform: PlatformOpenAI, Models: []string{"deepseek-v4-pro"}},
+		},
+	}
+	repo := makeStandardRepo(ch, map[int64]string{10: PlatformOpenAI})
+	svc := newTestChannelService(repo)
+
+	result := svc.GetChannelModelPricing(context.Background(), 10, "deepseek-v4-pro")
+	require.NotNil(t, result)
+	require.Equal(t, int64(103), result.ID)
+}
+
 func TestGetChannelModelPricing_CaseInsensitive(t *testing.T) {
 	ch := Channel{
 		ID:       1,
@@ -908,6 +950,25 @@ func TestResolveChannelMapping_ExactMapping(t *testing.T) {
 	require.True(t, result.Mapped)
 	require.Equal(t, "claude-sonnet-4-20250514", result.MappedModel)
 	require.Equal(t, int64(1), result.ChannelID)
+}
+
+func TestResolveChannelMapping_DeepSeekUndatedAliasUsesVersionedMapping(t *testing.T) {
+	ch := Channel{
+		ID:       1,
+		Status:   StatusActive,
+		GroupIDs: []int64{10},
+		ModelMapping: map[string]map[string]string{
+			PlatformOpenAI: {
+				"deepseek-v4-pro-0813": "deepseek-v4-pro-0813",
+			},
+		},
+	}
+	repo := makeStandardRepo(ch, map[int64]string{10: PlatformOpenAI})
+	svc := newTestChannelService(repo)
+
+	result := svc.ResolveChannelMapping(context.Background(), 10, "deepseek-v4-pro")
+	require.True(t, result.Mapped)
+	require.Equal(t, "deepseek-v4-pro-0813", result.MappedModel)
 }
 
 func TestResolveChannelMapping_WildcardMapping(t *testing.T) {
