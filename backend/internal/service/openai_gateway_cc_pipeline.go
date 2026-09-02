@@ -180,6 +180,12 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	userAgent string,
 	cacheIdentity string,
 ) (*http.Response, error) {
+	var mediaErr error
+	body, _, mediaErr = s.materializeFinalChatVideoDataURLs(ctx, c, account, body)
+	if mediaErr != nil {
+		return nil, mediaErr
+	}
+
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(body))
 	releaseUpstreamCtx()

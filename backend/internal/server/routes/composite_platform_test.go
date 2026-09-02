@@ -20,6 +20,39 @@ type compositeRouteRepoStub struct {
 	routes []service.CompositeModelRoute
 }
 
+type compositeMediaBridgeBodyAdmissionSpy struct {
+	prepared     bool
+	prepareOK    bool
+	prepareCalls int
+	cleanupCalls int
+}
+
+func (s *compositeMediaBridgeBodyAdmissionSpy) PrepareMediaBridgeRequestBody(c *gin.Context) bool {
+	s.prepareCalls++
+	s.prepared = true
+	if !s.prepareOK {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "busy"})
+	}
+	return s.prepareOK
+}
+
+func (s *compositeMediaBridgeBodyAdmissionSpy) CleanupMediaBridgeRequestBody(*gin.Context) {
+	s.cleanupCalls++
+}
+
+type compositeAdmissionGuardBody struct {
+	io.ReadCloser
+	prepared            *bool
+	readBeforeAdmission bool
+}
+
+func (b *compositeAdmissionGuardBody) Read(buffer []byte) (int, error) {
+	if b.prepared == nil || !*b.prepared {
+		b.readBeforeAdmission = true
+	}
+	return b.ReadCloser.Read(buffer)
+}
+
 func (s compositeRouteRepoStub) ListByGroup(ctx context.Context, groupID int64, includeDisabled bool) ([]service.CompositeModelRoute, error) {
 	routes := make([]service.CompositeModelRoute, 0, len(s.routes))
 	for _, route := range s.routes {
@@ -80,6 +113,106 @@ func TestCompositeTargetPlatformMiddlewareResolvesModelAndRestoresBody(t *testin
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusNoContent, w.Code)
+}
+
+func TestCompositeTargetPlatformMiddlewareAdmitsMediaBridgeBodyBeforeFirstRead(t *testing.T) {
+	for _, requestPath := range []string{"/v1/chat/completions", "/v1/responses"} {
+		t.Run(requestPath, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			admission := &compositeMediaBridgeBodyAdmissionSpy{prepareOK: true}
+			router := gin.New()
+			router.Use(gin.HandlerFunc(servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+				groupID := int64(1)
+				c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
+					GroupID: &groupID,
+					Group:   &service.Group{ID: groupID, Platform: service.PlatformComposite},
+				})
+				c.Next()
+			})))
+			router.Use(compositeTargetPlatformMiddleware(nil, admission))
+			router.POST(requestPath, func(c *gin.Context) {
+				body, err := io.ReadAll(c.Request.Body)
+				require.NoError(t, err)
+				require.JSONEq(t, `{"model":"gpt-5"}`, string(body))
+				c.Status(http.StatusNoContent)
+			})
+
+			requestBody := &compositeAdmissionGuardBody{
+				ReadCloser: io.NopCloser(strings.NewReader(`{"model":"gpt-5"}`)),
+				prepared:   &admission.prepared,
+			}
+			req := httptest.NewRequest(http.MethodPost, requestPath, requestBody)
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			require.Equal(t, http.StatusNoContent, w.Code)
+			require.False(t, requestBody.readBeforeAdmission)
+			require.Equal(t, 1, admission.prepareCalls)
+			require.Equal(t, 1, admission.cleanupCalls)
+		})
+	}
+}
+
+func TestCompositeTargetPlatformMiddlewareSkipsMediaBridgeAdmissionForMessages(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	admission := &compositeMediaBridgeBodyAdmissionSpy{prepareOK: true}
+	router := gin.New()
+	router.Use(gin.HandlerFunc(servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+		groupID := int64(1)
+		c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
+			GroupID: &groupID,
+			Group:   &service.Group{ID: groupID, Platform: service.PlatformComposite},
+		})
+		c.Next()
+	})))
+	router.Use(compositeTargetPlatformMiddleware(nil, admission))
+	router.POST("/v1/messages", func(c *gin.Context) {
+		_, err := io.ReadAll(c.Request.Body)
+		require.NoError(t, err)
+		c.Status(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusNoContent, w.Code)
+	require.Zero(t, admission.prepareCalls)
+	require.Zero(t, admission.cleanupCalls)
+}
+
+func TestCompositeTargetPlatformMiddlewareAdmissionFailureDoesNotReadBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	admission := &compositeMediaBridgeBodyAdmissionSpy{prepareOK: false}
+	router := gin.New()
+	router.Use(gin.HandlerFunc(servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+		groupID := int64(1)
+		c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
+			GroupID: &groupID,
+			Group:   &service.Group{ID: groupID, Platform: service.PlatformComposite},
+		})
+		c.Next()
+	})))
+	router.Use(compositeTargetPlatformMiddleware(nil, admission))
+	router.POST("/v1/chat/completions", func(c *gin.Context) {
+		t.Fatal("handler must not run after body admission fails")
+	})
+
+	requestBody := &compositeAdmissionGuardBody{
+		ReadCloser: io.NopCloser(strings.NewReader(`{"model":"gpt-5"}`)),
+		prepared:   new(bool),
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", requestBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusTooManyRequests, w.Code)
+	require.False(t, requestBody.readBeforeAdmission)
+	require.Equal(t, 1, admission.prepareCalls)
+	require.Zero(t, admission.cleanupCalls)
 }
 
 func TestCompositeTargetPlatformMiddlewareUsesExplicitRouteAndRewritesBody(t *testing.T) {

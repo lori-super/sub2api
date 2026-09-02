@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -121,6 +122,71 @@ func TestForwardAsRawChatCompletions_ForcesStreamUsageUpstreamAndPassesUsageDown
 	require.True(t, gjson.GetBytes(upstream.lastBody, "stream_options.include_usage").Bool())
 	require.Contains(t, rec.Body.String(), `"usage"`)
 	require.Contains(t, rec.Body.String(), "data: [DONE]")
+}
+
+func TestForwardAsChatCompletions_VideoPolicyForcesRawChat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dataURL := testMP4DataURL(testMP4Bytes())
+	body := []byte(fmt.Sprintf(`{"model":"kimi-k3","messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"video_url","video_url":{"url":%q}}]}],"stream":false}`, dataURL))
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"chatcmpl_video","object":"chat.completion","model":"kimi-k3","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":2,"total_tokens":11}}`,
+		)),
+	}}
+	store := &memoryInlineMediaStore{}
+	svc := &OpenAIGatewayService{
+		cfg:             rawChatCompletionsTestConfig(),
+		httpUpstream:    upstream,
+		chatVideoBridge: newOpenAIChatVideoTestBridge(t, store, openAIChatVideoTestPolicy()),
+	}
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: true}
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "http://upstream.example/v1/chat/completions", upstream.lastReq.URL.String())
+	require.Equal(t, 1, store.puts)
+	require.True(t, strings.HasPrefix(gjson.GetBytes(upstream.lastBody, "messages.0.content.1.video_url.url").String(), "https://"))
+}
+
+func TestForwardAsChatCompletions_VideoPolicyLeavesTextOnResponsesRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"kimi-k3","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"stop after route capture"}}`)),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:             rawChatCompletionsTestConfig(),
+		httpUpstream:    upstream,
+		chatVideoBridge: newOpenAIChatVideoTestBridge(t, &memoryInlineMediaStore{}, openAIChatVideoTestPolicy()),
+	}
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: true}
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "http://upstream.example/v1/responses", upstream.lastReq.URL.String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
 }
 
 func TestForwardAsChatCompletions_OpenAICompatibleGrokRawMissingUsageFailsBeforeWrite(t *testing.T) {

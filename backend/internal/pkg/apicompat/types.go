@@ -695,9 +695,10 @@ type ChatMessage struct {
 
 // ChatContentPart is a typed content part in a multi-modal message.
 type ChatContentPart struct {
-	Type     string        `json:"type"` // "text" | "image_url" | "file"
+	Type     string        `json:"type"` // "text" | "image_url" | "video_url" | "file"
 	Text     string        `json:"text,omitempty"`
 	ImageURL *ChatImageURL `json:"image_url,omitempty"`
+	VideoURL *ChatVideoURL `json:"video_url,omitempty"`
 	File     *ChatFile     `json:"file,omitempty"`
 }
 
@@ -705,6 +706,11 @@ type ChatContentPart struct {
 type ChatImageURL struct {
 	URL    string `json:"url"`
 	Detail string `json:"detail,omitempty"` // "auto" | "low" | "high"
+}
+
+// ChatVideoURL contains the URL or data URI for a video content part.
+type ChatVideoURL struct {
+	URL string `json:"url"`
 }
 
 // ChatFile contains the payload of a "file" content part (e.g. PDF input).

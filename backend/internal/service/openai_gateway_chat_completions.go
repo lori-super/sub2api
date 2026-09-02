@@ -82,6 +82,33 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return nil, errors.New("codex_cli_only restriction: only codex official clients are allowed")
 	}
 
+	// Cursor compatibility: some clients send a Responses-shaped body to the
+	// /v1/chat/completions URL. Detect it before adaptive routing so adaptive
+	// accounts never forward the body unchanged to a Chat Completions endpoint.
+	isResponsesShape := !gjson.GetBytes(body, "messages").Exists() && gjson.GetBytes(body, "input").Exists()
+	if !isResponsesShape {
+		requestedModel := gjson.GetBytes(body, "model").String()
+		videoBillingModel := resolveOpenAIForwardModel(account, requestedModel, defaultMappedModel)
+		videoUpstreamModel := normalizeOpenAIModelForUpstream(account, videoBillingModel)
+		forceChatVideo, forceErr := s.shouldForceChatVideoEgress(ctx, c, account, videoUpstreamModel, body)
+		if forceErr != nil {
+			return nil, forceErr
+		}
+		if forceChatVideo {
+			materializedBody, _, materializeErr := s.materializeChatVideoDataURLsForModel(
+				ctx,
+				c,
+				account,
+				videoUpstreamModel,
+				body,
+			)
+			if materializeErr != nil {
+				return nil, materializeErr
+			}
+			return s.forwardAsRawChatCompletions(ctx, c, account, materializedBody, defaultMappedModel)
+		}
+	}
+
 	if account.Platform == PlatformGrok {
 		if account.IsGrokOAuth() {
 			if eligible, reason := grokChatResponsesBridgeEligibility(body); eligible {
@@ -95,11 +122,6 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		}
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
-
-	// Cursor compatibility: some clients send a Responses-shaped body to the
-	// /v1/chat/completions URL. Detect it before adaptive routing so adaptive
-	// accounts never forward the body unchanged to a Chat Completions endpoint.
-	isResponsesShape := !gjson.GetBytes(body, "messages").Exists() && gjson.GetBytes(body, "input").Exists()
 
 	// Generic OpenAI-compatible adaptive accounts preserve the client's wire
 	// protocol. A prior 404/405 fallback mark skips this branch exactly once so

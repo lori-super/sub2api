@@ -821,6 +821,8 @@ func redactSensitiveJSON(v any) any {
 			out = append(out, redactSensitiveJSON(vv))
 		}
 		return out
+	case string:
+		return sanitizeUpstreamErrorMessage(t)
 	default:
 		return v
 	}
@@ -1044,7 +1046,8 @@ func sanitizeErrorBodyForStorage(raw string, maxBytes int) (sanitized string, tr
 		return out, trunc
 	}
 
-	// Non-JSON: best-effort truncate.
+	// Non-JSON can still contain a presigned URL echoed by the upstream.
+	raw = sanitizeUpstreamErrorMessage(raw)
 	if maxBytes > 0 && len(raw) > maxBytes {
 		return truncateString(raw, maxBytes), true
 	}

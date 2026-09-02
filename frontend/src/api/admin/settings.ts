@@ -1383,6 +1383,222 @@ export async function updateStreamTimeoutSettings(
   return data;
 }
 
+// ==================== Media Bridge Runtime Settings ====================
+
+export const MEDIA_BRIDGE_MODES = [
+  "off",
+  "observe",
+  "canary",
+  "on",
+  "drain",
+] as const;
+
+export type MediaBridgeMode = (typeof MEDIA_BRIDGE_MODES)[number];
+
+// All public ingress endpoints remain available independently of this scope.
+// Administrators can restrict which request origins are eligible for bridging;
+// an empty list means no additional ingress restriction.
+export const MEDIA_BRIDGE_INGRESS_PROTOCOLS = [
+  "openai_chat_completions",
+  "openai_responses",
+] as const;
+
+export type MediaBridgeIngressProtocol = (typeof MEDIA_BRIDGE_INGRESS_PROTOCOLS)[number];
+
+export const MEDIA_BRIDGE_K3_VIDEO_EGRESS_PROTOCOL = "openai_chat_completions" as const;
+
+export interface MediaBridgeTenantOverride {
+  tenant_id: number;
+  weight: number;
+  max_inflight_requests: number;
+  max_inflight_decoded_bytes: number;
+  max_bandwidth_bytes_per_second: number;
+}
+
+export interface MediaBridgeStorageSettings {
+  provider: string;
+  endpoint: string;
+  region: string;
+  bucket: string;
+  object_prefix: string;
+  access_key_id: string;
+  /** Write-only. Leave blank to preserve the currently configured secret. */
+  secret_access_key?: string;
+  secret_configured: boolean;
+  ready: boolean;
+  force_path_style: boolean;
+}
+
+export interface MediaBridgeSettings {
+  version: number;
+  mode: MediaBridgeMode;
+  canary_percent: number;
+  scope: {
+    /** Adjustable request-origin filter. Empty means no additional restriction. */
+    ingress_protocols: MediaBridgeIngressProtocol[];
+    /** Final media egress, not an ingress allowlist. Phase 1 is fixed to K3 Chat. */
+    upstream_protocols: string[];
+    models: string[];
+    account_ids: number[];
+  };
+  capacity: {
+    max_inflight_requests: number;
+    max_inflight_decoded_bytes: number;
+    max_bandwidth_bytes_per_second: number;
+    burst_bytes: number;
+    admission_wait_ms: number;
+    default_tenant_weight: number;
+    tenant_overrides: MediaBridgeTenantOverride[];
+  };
+  protection: {
+    memory_soft_limit_percent: number;
+    memory_hard_limit_percent: number;
+    min_free_memory_bytes: number;
+    r2_error_rate_threshold_percent: number;
+    r2_latency_threshold_ms: number;
+    r2_window_seconds: number;
+    r2_open_seconds: number;
+    r2_half_open_probes: number;
+    r2_minimum_samples: number;
+    r2_upload_timeout_seconds: number;
+  };
+  file_policy: {
+    allowed_mime_types: string[];
+    max_files_per_request: number;
+    max_single_decoded_bytes: number;
+    max_request_decoded_bytes: number;
+    deduplicate_within_request: boolean;
+  };
+  retention: {
+    signed_url_ttl_seconds: number;
+    request_end_delete_delay_seconds: number;
+  };
+  storage: MediaBridgeStorageSettings;
+}
+
+export function createDefaultMediaBridgeSettings(): MediaBridgeSettings {
+  return {
+    version: 1,
+    mode: "off",
+    canary_percent: 0,
+    scope: {
+      ingress_protocols: [...MEDIA_BRIDGE_INGRESS_PROTOCOLS],
+      upstream_protocols: [MEDIA_BRIDGE_K3_VIDEO_EGRESS_PROTOCOL],
+      models: ["kimi-k3"],
+      account_ids: [],
+    },
+    capacity: {
+      max_inflight_requests: 0,
+      max_inflight_decoded_bytes: 0,
+      max_bandwidth_bytes_per_second: 0,
+      burst_bytes: 0,
+      admission_wait_ms: 200,
+      default_tenant_weight: 10,
+      tenant_overrides: [],
+    },
+    protection: {
+      memory_soft_limit_percent: 72,
+      memory_hard_limit_percent: 82,
+      min_free_memory_bytes: 0,
+      r2_error_rate_threshold_percent: 5,
+      r2_latency_threshold_ms: 0,
+      r2_window_seconds: 60,
+      r2_open_seconds: 30,
+      r2_half_open_probes: 2,
+      r2_minimum_samples: 20,
+      r2_upload_timeout_seconds: 600,
+    },
+    file_policy: {
+      allowed_mime_types: ["video/mp4"],
+      max_files_per_request: 4,
+      max_single_decoded_bytes: 128 * 1024 * 1024,
+      max_request_decoded_bytes: 0,
+      deduplicate_within_request: true,
+    },
+    retention: {
+      signed_url_ttl_seconds: 3600,
+      request_end_delete_delay_seconds: 900,
+    },
+    storage: {
+      provider: "r2",
+      endpoint: "",
+      region: "auto",
+      bucket: "",
+      object_prefix: "media-bridge/",
+      access_key_id: "",
+      secret_access_key: "",
+      secret_configured: false,
+      ready: false,
+      force_path_style: true,
+    },
+  };
+}
+
+function withoutMediaBridgeSecret(settings: MediaBridgeSettings): MediaBridgeSettings {
+  if (!settings.storage) return settings;
+  return {
+    ...settings,
+    storage: {
+      ...settings.storage,
+      // The secret is write-only. Never retain a value returned by the server.
+      secret_access_key: "",
+    },
+  };
+}
+
+export async function getMediaBridgeSettings(): Promise<MediaBridgeSettings> {
+  const { data } = await apiClient.get<MediaBridgeSettings>(
+    "/admin/settings/media-bridge",
+  );
+  return withoutMediaBridgeSecret(data);
+}
+
+export async function updateMediaBridgeSettings(
+  settings: MediaBridgeSettings,
+): Promise<MediaBridgeSettings> {
+  const { storage: _storage, ...policyWithoutStorage } = settings;
+  const policy = {
+    ...policyWithoutStorage,
+    scope: {
+      ...policyWithoutStorage.scope,
+      upstream_protocols: [MEDIA_BRIDGE_K3_VIDEO_EGRESS_PROTOCOL],
+    },
+  };
+  const { data } = await apiClient.put<MediaBridgeSettings>(
+    "/admin/settings/media-bridge",
+    policy,
+  );
+  return withoutMediaBridgeSecret(data);
+}
+
+function mediaBridgeStorageWritePayload(storage: MediaBridgeStorageSettings) {
+  const { secret_configured: _secretConfigured, ready: _ready, ...payload } = storage;
+  return payload;
+}
+
+export async function updateMediaBridgeStorage(
+  storage: MediaBridgeStorageSettings,
+): Promise<MediaBridgeStorageSettings> {
+  const { data } = await apiClient.put<MediaBridgeStorageSettings>(
+    "/admin/settings/media-bridge/storage",
+    mediaBridgeStorageWritePayload(storage),
+  );
+  return {
+    ...data,
+    secret_access_key: "",
+  };
+}
+
+export async function testMediaBridgeStorage(
+  storage: MediaBridgeStorageSettings,
+): Promise<{ ok: boolean }> {
+  const { data } = await apiClient.post<{ ok: boolean }>(
+    "/admin/settings/media-bridge/storage/test",
+    mediaBridgeStorageWritePayload(storage),
+  );
+  return data;
+}
+
 // ==================== Rectifier Settings ====================
 
 /**
@@ -1575,6 +1791,10 @@ export const settingsAPI = {
   updatePanelRateLimitSettings,
   getStreamTimeoutSettings,
   updateStreamTimeoutSettings,
+  getMediaBridgeSettings,
+  updateMediaBridgeSettings,
+  updateMediaBridgeStorage,
+  testMediaBridgeStorage,
   getRectifierSettings,
   updateRectifierSettings,
   getBetaPolicySettings,

@@ -17,6 +17,86 @@ func TestResponsesInputToChatMessages_DeveloperRoleMapsToSystem(t *testing.T) {
 	assert.JSONEq(t, `"follow project instructions"`, string(messages[0].Content))
 }
 
+func TestResponsesInputToChatMessages_InputVideoStringAndObject(t *testing.T) {
+	input := json.RawMessage(`[
+		{"type":"message","role":"user","content":[
+			{"type":"input_text","text":"Describe both videos"},
+			{"type":"input_video","video_url":"data:video/mp4;base64,AAAA"},
+			{"type":"input_video","video_url":{"url":"https://media.example/second.mp4"}}
+		]}
+	]`)
+
+	messages, err := responsesInputToChatMessages("", input)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	require.Equal(t, "user", messages[0].Role)
+
+	var parts []ChatContentPart
+	require.NoError(t, json.Unmarshal(messages[0].Content, &parts))
+	require.Len(t, parts, 3)
+	require.Equal(t, "text", parts[0].Type)
+	require.Equal(t, "Describe both videos", parts[0].Text)
+	require.NotNil(t, parts[1].VideoURL)
+	require.Equal(t, "data:video/mp4;base64,AAAA", parts[1].VideoURL.URL)
+	require.NotNil(t, parts[2].VideoURL)
+	require.Equal(t, "https://media.example/second.mp4", parts[2].VideoURL.URL)
+}
+
+func TestResponsesInputToChatMessages_TopLevelInputVideo(t *testing.T) {
+	messages, err := responsesInputToChatMessages("", json.RawMessage(`[
+		{"type":"input_video","video_url":{"url":"data:video/mp4;base64,AQID"}}
+	]`))
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+
+	var parts []ChatContentPart
+	require.NoError(t, json.Unmarshal(messages[0].Content, &parts))
+	require.Len(t, parts, 1)
+	require.Equal(t, "video_url", parts[0].Type)
+	require.NotNil(t, parts[0].VideoURL)
+	require.Equal(t, "data:video/mp4;base64,AQID", parts[0].VideoURL.URL)
+}
+
+func TestResponsesInputToChatMessages_RejectsExplicitVideoWithoutURL(t *testing.T) {
+	_, err := responsesInputToChatMessages("", json.RawMessage(`[
+		{"type":"message","role":"user","content":[{"type":"input_video"}]}
+	]`))
+	require.ErrorContains(t, err, "input_video.video_url is required")
+}
+
+func TestResponsesInputToChatMessages_MP4InputFileBecomesVideoURL(t *testing.T) {
+	input := json.RawMessage(`[
+		{"type":"message","role":"user","content":[
+			{"type":"input_file","file_data":"data:video/mp4;base64,AAAA","filename":"inline.mp4"},
+			{"type":"input_file","file_data":"AQID","mime_type":"video/mp4"},
+			{"type":"input_file","file_data":"BAUG","filename":"named.mp4"},
+			{"type":"input_file","file_url":"https://media.example/video.mp4?sig=1"},
+			{"type":"input_file","file_url":{"url":"https://media.example/signed?id=2"},"media_type":"video/mp4"},
+			{"type":"input_file","file_data":"data:application/pdf;base64,JVBERg==","filename":"document.pdf"}
+		]}
+	]`)
+
+	messages, err := responsesInputToChatMessages("", input)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+
+	var parts []ChatContentPart
+	require.NoError(t, json.Unmarshal(messages[0].Content, &parts))
+	require.Len(t, parts, 5, "non-video input_file must remain skipped")
+	wantURLs := []string{
+		"data:video/mp4;base64,AAAA",
+		"data:video/mp4;base64,AQID",
+		"data:video/mp4;base64,BAUG",
+		"https://media.example/video.mp4?sig=1",
+		"https://media.example/signed?id=2",
+	}
+	for index, wantURL := range wantURLs {
+		require.Equal(t, "video_url", parts[index].Type)
+		require.NotNil(t, parts[index].VideoURL)
+		require.Equal(t, wantURL, parts[index].VideoURL.URL)
+	}
+}
+
 func TestResponsesInputToChatMessages_SkipsInvalidHistoricalFunctionCall(t *testing.T) {
 	input := json.RawMessage(`[
 		{"type":"function_call","call_id":"call_bad","name":"exec_command","arguments":"{\"cmd\": \"ssh root@HOST"},

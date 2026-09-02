@@ -62,6 +62,7 @@ type SettingHandler struct {
 	notificationEmailService *service.NotificationEmailService
 	totpService              *service.TotpService
 	userService              *service.UserService
+	mediaBridgeStorage       *service.MediaBridgeStorageRuntime
 }
 
 // NewSettingHandler 创建系统设置处理器
@@ -96,6 +97,12 @@ func (h *SettingHandler) SetAliyunCaptchaService(aliyunCaptchaService *service.A
 func (h *SettingHandler) SetStepUpDeps(totpService *service.TotpService, userService *service.UserService) {
 	h.totpService = totpService
 	h.userService = userService
+}
+
+// SetMediaBridgeStorageRuntime attaches the administrator-managed encrypted R2
+// runtime without widening the long-standing constructor used by unit tests.
+func (h *SettingHandler) SetMediaBridgeStorageRuntime(storage *service.MediaBridgeStorageRuntime) {
+	h.mediaBridgeStorage = storage
 }
 
 // GetSettings 获取所有系统设置

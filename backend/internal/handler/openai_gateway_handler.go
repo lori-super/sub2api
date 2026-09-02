@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -43,6 +44,89 @@ type OpenAIGatewayHandler struct {
 	imageLimiter               *imageConcurrencyLimiter
 	maxAccountSwitches         int
 	cfg                        *config.Config
+}
+
+const mediaBridgeCompressedBodyReservationBytes = int64(64 << 20)
+
+const mediaBridgeRequestBodyPreparedKey = "openai_media_bridge_request_body_prepared"
+
+func setMediaBridgeRetryAfter(c *gin.Context, bridgeErr *service.OpenAIChatVideoBridgeError) {
+	if c == nil || bridgeErr == nil || bridgeErr.RetryAfter <= 0 {
+		return
+	}
+	seconds := int64((bridgeErr.RetryAfter + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	c.Header("Retry-After", strconv.FormatInt(seconds, 10))
+}
+
+func (h *OpenAIGatewayHandler) handleMediaBridgeRequestBodyError(c *gin.Context, err error) bool {
+	bridgeErr, ok := service.AsOpenAIChatVideoBridgeError(err)
+	if !ok {
+		return false
+	}
+	setMediaBridgeRetryAfter(c, bridgeErr)
+	h.errorResponse(c, bridgeErr.StatusCode, bridgeErr.Type, bridgeErr.Message)
+	return true
+}
+
+func (h *OpenAIGatewayHandler) prepareMediaBridgeRequestBody(c *gin.Context) bool {
+	if h == nil || h.gatewayService == nil || c == nil || c.Request == nil {
+		return true
+	}
+	if prepared, ok := c.Get(mediaBridgeRequestBodyPreparedKey); ok && prepared == true {
+		return true
+	}
+	contentLength := c.Request.ContentLength
+	if contentLength < 0 {
+		contentLength = 0
+	}
+	maxBodyBytes := gatewayMaxBodySize(h.cfg)
+	if maxBodyBytes > 0 && contentLength > maxBodyBytes {
+		h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxBodyBytes))
+		return false
+	}
+
+	reservationHint := contentLength
+	switch requestContentEncodingCategory(c.Request.Header.Get("Content-Encoding")) {
+	case "gzip", "zstd", "deflate":
+		decodedReservation := maxBodyBytes
+		if decodedReservation <= 0 || decodedReservation > mediaBridgeCompressedBodyReservationBytes {
+			decodedReservation = mediaBridgeCompressedBodyReservationBytes
+		}
+		if reservationHint > math.MaxInt64-decodedReservation {
+			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "Request body is too large")
+			return false
+		}
+		reservationHint += decodedReservation
+	}
+	if err := h.gatewayService.PrepareOpenAIChatVideoBridgeRequestBody(c.Request.Context(), c, reservationHint); err != nil {
+		if h.handleMediaBridgeRequestBodyError(c, err) {
+			return false
+		}
+		h.errorResponse(c, http.StatusServiceUnavailable, "temporary_media_error", "Temporary video bridge request-body admission is unavailable")
+		return false
+	}
+	c.Set(mediaBridgeRequestBodyPreparedKey, true)
+	return true
+}
+
+// PrepareMediaBridgeRequestBody lets Composite routing admit the body before
+// its model detector performs the first read. The Gin marker makes the later
+// Chat/Responses handler call reuse the same request session and body leases.
+func (h *OpenAIGatewayHandler) PrepareMediaBridgeRequestBody(c *gin.Context) bool {
+	return h.prepareMediaBridgeRequestBody(c)
+}
+
+// CleanupMediaBridgeRequestBody releases an early Composite-routing admission
+// when routing aborts before the final Chat/Responses handler is entered. A
+// handler cleanup followed by this cleanup is safe because sessions close once.
+func (h *OpenAIGatewayHandler) CleanupMediaBridgeRequestBody(c *gin.Context) {
+	if h == nil || h.gatewayService == nil || c == nil {
+		return
+	}
+	h.gatewayService.CleanupOpenAIChatVideoBridgeSession(c)
 }
 
 type openAIWSTurnChannelMappingSnapshot struct {
@@ -348,6 +432,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// 局部兜底：确保该 handler 内部任何 panic 都不会击穿到进程级。
 	streamStarted := false
 	defer h.recoverResponsesPanic(c, &streamStarted)
+	defer h.gatewayService.CleanupOpenAIChatVideoBridgeSession(c)
 	compactStartedAt := time.Now()
 	defer h.logOpenAIRemoteCompactOutcome(c, compactStartedAt)
 	setOpenAIClientTransportHTTP(c)
@@ -376,10 +461,16 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	if !h.ensureResponsesDependencies(c, reqLog) {
 		return
 	}
+	if !h.prepareMediaBridgeRequestBody(c) {
+		return
+	}
 
 	// Read request body
 	body, err := readLenientJSONRequestBodyWithPrealloc(c.Request, h.cfg)
 	if err != nil {
+		if h.handleMediaBridgeRequestBodyError(c, err) {
+			return
+		}
 		if maxErr, ok := extractMaxBytesError(err); ok {
 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
 			return
@@ -415,7 +506,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// 校验请求体 JSON 合法性
 	if !gjson.ValidBytes(body) {
-		logRequestBodyParseFailure(reqLog, body, nil)
+		logMediaRequestBodyParseFailure(reqLog, body, nil)
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
@@ -792,6 +883,20 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			})
 		}
 		if err != nil {
+			if bridgeErr, ok := service.AsOpenAIChatVideoBridgeError(err); ok {
+				setMediaBridgeRetryAfter(c, bridgeErr)
+				reqLog.Info("openai.video_bridge_failed",
+					zap.Int64("account_id", account.ID),
+					zap.Int("status", bridgeErr.StatusCode),
+					zap.Error(err),
+				)
+				h.handleStreamingAwareError(c, bridgeErr.StatusCode, bridgeErr.Type, bridgeErr.Message, streamStarted)
+				return
+			}
+			if service.IsOpenAIResponsesFallbackClientError(err) {
+				reqLog.Info("openai.responses_fallback_client_error", zap.Error(err))
+				return
+			}
 			if result != nil && result.ImageCount > 0 {
 				reqLog.Warn("openai.forward_partial_error_with_image_result",
 					zap.Int64("account_id", account.ID),
@@ -850,14 +955,17 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							continue
 						}
 					}
+					consumeSwitchBudget := shouldConsumeOpenAIAccountSwitchBudget(failoverErr)
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
-					if switchCount >= maxAccountSwitches {
-						h.handleFailoverExhausted(c, failoverErr, streamStarted)
-						return
+					if consumeSwitchBudget {
+						if switchCount >= maxAccountSwitches {
+							h.handleFailoverExhausted(c, failoverErr, streamStarted)
+							return
+						}
+						switchCount++
 					}
-					switchCount++
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount, &oauth429FailoverState) {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
@@ -2937,6 +3045,16 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 }
 
 func credentialFailoverClientResponse(failoverErr *service.UpstreamFailoverError) (int, string) {
+	if failoverErr != nil &&
+		(failoverErr.Reason == service.OpenAIMediaBridgeChatAccountIncompatibleReason ||
+			failoverErr.Reason == service.OpenAIMediaBridgeChatCredentialMissingReason) &&
+		strings.TrimSpace(failoverErr.ClientMessage) != "" {
+		status := failoverErr.ClientStatusCode
+		if status <= 0 {
+			status = http.StatusServiceUnavailable
+		}
+		return status, failoverErr.ClientMessage
+	}
 	if failoverErr != nil && failoverErr.Reason == service.OpenAIUpstreamAccessStateReason && strings.TrimSpace(failoverErr.ClientMessage) != "" {
 		status := failoverErr.ClientStatusCode
 		if status <= 0 {
@@ -2948,6 +3066,13 @@ func credentialFailoverClientResponse(failoverErr *service.UpstreamFailoverError
 		return http.StatusBadGateway, service.AntigravityCredentialRejectedClientMessage
 	}
 	return http.StatusServiceUnavailable, service.GrokCredentialUnavailableClientMessage
+}
+
+func shouldConsumeOpenAIAccountSwitchBudget(failoverErr *service.UpstreamFailoverError) bool {
+	return failoverErr == nil ||
+		failoverErr.Stage != service.GatewayFailureStageAccountAuth ||
+		failoverErr.Scope != service.GatewayFailureScopeRequest ||
+		failoverErr.Reason != service.OpenAIMediaBridgeChatAccountIncompatibleReason
 }
 
 func copyFailoverRetryAfter(c *gin.Context, headers http.Header) {
