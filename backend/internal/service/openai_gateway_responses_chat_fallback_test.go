@@ -56,6 +56,35 @@ func TestForwardResponses_EligibleVideoForcesChatAndRestoresResponses(t *testing
 	require.Equal(t, "ok", gjson.Get(rec.Body.String(), "output.0.content.0.text").String())
 }
 
+func TestForwardResponses_LocalFallbackValidationReturnsClientError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "malformed json", body: `{"model":`},
+		{name: "missing model", body: `{"input":"hello"}`},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(tt.body))
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
+
+			result, err := svc.forwardResponsesViaRawChatCompletions(
+				context.Background(), c, rawChatCompletionsTestAccount(), []byte(tt.body),
+			)
+
+			require.Nil(t, result)
+			require.Error(t, err)
+			require.True(t, IsOpenAIResponsesFallbackClientError(err))
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+		})
+	}
+}
+
 func TestForwardResponses_ForceChatCompletionsRoutesNonStreamingToChatCompletions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

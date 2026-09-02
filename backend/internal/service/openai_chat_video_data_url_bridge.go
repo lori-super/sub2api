@@ -37,6 +37,11 @@ const (
 
 var errOpenAIChatVideoUnsupportedMediaType = errors.New("unsupported inline video media type")
 
+const (
+	OpenAIMediaBridgeChatAccountIncompatibleReason = GatewayFailureReason("media_bridge_chat_account_incompatible")
+	OpenAIMediaBridgeChatCredentialMissingReason   = GatewayFailureReason("media_bridge_chat_credential_missing")
+)
+
 // InlineMediaStore is deliberately independent from TemporaryMediaObjectStore.
 // Put must consume Body before returning success. PresignGet returns a short-
 // lived HTTPS URL for one private object; the bucket itself need not be public.
@@ -302,6 +307,9 @@ func (s *OpenAIGatewayService) shouldForceChatVideoEgress(
 	if session == nil || !session.policy.eligible(account, upstreamModel) {
 		return false, nil
 	}
+	if err := openAIChatVideoForcedEgressCredentialError(account); err != nil {
+		return false, err
+	}
 	if err := validateOpenAIChatVideoForcedEgress(c, body, ingressProtocol); err != nil {
 		return false, newOpenAIChatVideoBridgeError(
 			http.StatusBadRequest,
@@ -311,6 +319,33 @@ func (s *OpenAIGatewayService) shouldForceChatVideoEgress(
 		)
 	}
 	return true, nil
+}
+
+func openAIChatVideoForcedEgressCredentialError(account *Account) error {
+	if account == nil || account.Type != AccountTypeAPIKey ||
+		(!account.IsOpenAI() && !account.IsCNProvider()) {
+		return &UpstreamFailoverError{
+			StatusCode:        http.StatusServiceUnavailable,
+			Stage:             GatewayFailureStageAccountAuth,
+			Scope:             GatewayFailureScopeRequest,
+			Reason:            OpenAIMediaBridgeChatAccountIncompatibleReason,
+			NextAccountAction: NextAccountRetry,
+			ClientStatusCode:  http.StatusServiceUnavailable,
+			ClientMessage:     "No available API-key account supports video URL compatibility",
+		}
+	}
+	if strings.TrimSpace(account.GetOpenAIProtocolAPIKey()) == "" {
+		return &UpstreamFailoverError{
+			StatusCode:        http.StatusServiceUnavailable,
+			Stage:             GatewayFailureStageAccountAuth,
+			Scope:             GatewayFailureScopeAccount,
+			Reason:            OpenAIMediaBridgeChatCredentialMissingReason,
+			NextAccountAction: NextAccountRetry,
+			ClientStatusCode:  http.StatusServiceUnavailable,
+			ClientMessage:     "The selected video upstream account is missing its Chat Completions API key",
+		}
+	}
+	return nil
 }
 
 func validateOpenAIChatVideoForcedEgress(c *gin.Context, body []byte, ingressProtocol string) error {

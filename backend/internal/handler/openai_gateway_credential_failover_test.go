@@ -87,6 +87,28 @@ func TestOpenAIAccessStateCredentialFailureUsesTypedSafeResponse(t *testing.T) {
 	require.NotContains(t, recorder.Body.String(), "must-not-leak")
 }
 
+func TestMediaBridgeCredentialFailureUsesTypedSafeResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	message := "No available API-key account supports video URL compatibility"
+
+	(&OpenAIGatewayHandler{}).handleFailoverExhausted(c, &service.UpstreamFailoverError{
+		StatusCode:        http.StatusServiceUnavailable,
+		Stage:             service.GatewayFailureStageAccountAuth,
+		Scope:             service.GatewayFailureScopeRequest,
+		Reason:            service.OpenAIMediaBridgeChatAccountIncompatibleReason,
+		NextAccountAction: service.NextAccountRetry,
+		ClientStatusCode:  http.StatusServiceUnavailable,
+		ClientMessage:     message,
+		ResponseBody:      []byte(`{"api_key":"must-not-leak"}`),
+	}, false)
+
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), message)
+	require.NotContains(t, recorder.Body.String(), "must-not-leak")
+}
+
 func TestOpenAICapacityFailoverExhaustionPreservesMessageAsServerError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	message := "Our servers are currently overloaded. Please try again later."

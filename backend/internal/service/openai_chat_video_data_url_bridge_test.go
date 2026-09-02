@@ -135,6 +135,18 @@ func openAIChatVideoTestPolicy() OpenAIChatVideoBridgePolicy {
 	}
 }
 
+func openAIChatVideoTestAccount() *Account {
+	return &Account{
+		ID:       7,
+		Platform: PlatformKimi,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://upstream.example",
+		},
+	}
+}
+
 func newOpenAIChatVideoTestBridge(t *testing.T, store InlineMediaStore, policy OpenAIChatVideoBridgePolicy) *OpenAIChatVideoBridge {
 	t.Helper()
 	bridge, err := NewOpenAIChatVideoBridge(store, OpenAIChatVideoBridgePolicyProviderFunc(
@@ -443,7 +455,7 @@ func TestOpenAIChatVideoBridgeForcesChatEgressOnlyForEligibleVideo(t *testing.T)
 			got, err := svc.shouldForceChatVideoEgress(
 				context.Background(),
 				c,
-				&Account{ID: 7},
+				openAIChatVideoTestAccount(),
 				tt.upstreamModel,
 				[]byte(tt.body),
 			)
@@ -474,6 +486,59 @@ func TestOpenAIChatVideoBridgeDoesNotOverrideAnthropicProtocolAccounts(t *testin
 	forced, err := svc.shouldForceChatVideoEgress(context.Background(), c, account, "kimi-k3", body)
 	require.NoError(t, err)
 	require.False(t, forced)
+}
+
+func TestOpenAIChatVideoBridgeOnlyOverridesAPIKeyChatAccounts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dataURL := testMP4DataURL(testMP4Bytes())
+	body := []byte(fmt.Sprintf(`{"model":"kimi-k3","input":[{"type":"input_video","video_url":%q}]}`, dataURL))
+
+	tests := []struct {
+		name    string
+		account *Account
+	}{
+		{name: "openai oauth", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeOAuth}},
+		{name: "openai setup token", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeSetupToken}},
+		{name: "grok api key", account: &Account{ID: 7, Platform: PlatformGrok, Type: AccountTypeAPIKey}},
+		{name: "generic upstream", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeUpstream}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bridge := newOpenAIChatVideoTestBridge(t, &memoryInlineMediaStore{}, openAIChatVideoTestPolicy())
+			svc := &OpenAIGatewayService{chatVideoBridge: bridge}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+
+			forced, err := svc.shouldForceChatVideoEgress(context.Background(), c, tt.account, "kimi-k3", body)
+			require.False(t, forced)
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.Equal(t, OpenAIMediaBridgeChatAccountIncompatibleReason, failoverErr.Reason)
+			require.Equal(t, GatewayFailureScopeRequest, failoverErr.Scope)
+			require.True(t, failoverErr.ShouldRetryNextAccount())
+			require.False(t, failoverErr.ShouldReportAccountScheduleFailure())
+		})
+	}
+}
+
+func TestOpenAIChatVideoBridgeMissingAPIKeyFailsOverAndReportsAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dataURL := testMP4DataURL(testMP4Bytes())
+	body := []byte(fmt.Sprintf(`{"model":"kimi-k3","input":[{"type":"input_video","video_url":%q}]}`, dataURL))
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	bridge := newOpenAIChatVideoTestBridge(t, &memoryInlineMediaStore{}, openAIChatVideoTestPolicy())
+	svc := &OpenAIGatewayService{chatVideoBridge: bridge}
+	account := &Account{ID: 7, Platform: PlatformKimi, Type: AccountTypeAPIKey}
+
+	forced, err := svc.shouldForceChatVideoEgress(context.Background(), c, account, "kimi-k3", body)
+	require.False(t, forced)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, OpenAIMediaBridgeChatCredentialMissingReason, failoverErr.Reason)
+	require.Equal(t, GatewayFailureScopeAccount, failoverErr.Scope)
+	require.True(t, failoverErr.ShouldReportAccountScheduleFailure())
 }
 
 func TestOpenAIChatVideoBridgeRejectsLossyForcedResponsesConversion(t *testing.T) {
@@ -541,7 +606,7 @@ func TestOpenAIChatVideoBridgeRejectsLossyForcedResponsesConversion(t *testing.T
 				MarkOpenAINativeCompactionV2(c)
 			}
 
-			forced, err := svc.shouldForceChatVideoEgress(context.Background(), c, &Account{ID: 7}, "kimi-k3", []byte(tt.body))
+			forced, err := svc.shouldForceChatVideoEgress(context.Background(), c, openAIChatVideoTestAccount(), "kimi-k3", []byte(tt.body))
 			require.False(t, forced)
 			bridgeErr, ok := AsOpenAIChatVideoBridgeError(err)
 			require.True(t, ok)

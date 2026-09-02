@@ -893,6 +893,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				h.handleStreamingAwareError(c, bridgeErr.StatusCode, bridgeErr.Type, bridgeErr.Message, streamStarted)
 				return
 			}
+			if service.IsOpenAIResponsesFallbackClientError(err) {
+				reqLog.Info("openai.responses_fallback_client_error", zap.Error(err))
+				return
+			}
 			if result != nil && result.ImageCount > 0 {
 				reqLog.Warn("openai.forward_partial_error_with_image_result",
 					zap.Int64("account_id", account.ID),
@@ -3038,6 +3042,16 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 }
 
 func credentialFailoverClientResponse(failoverErr *service.UpstreamFailoverError) (int, string) {
+	if failoverErr != nil &&
+		(failoverErr.Reason == service.OpenAIMediaBridgeChatAccountIncompatibleReason ||
+			failoverErr.Reason == service.OpenAIMediaBridgeChatCredentialMissingReason) &&
+		strings.TrimSpace(failoverErr.ClientMessage) != "" {
+		status := failoverErr.ClientStatusCode
+		if status <= 0 {
+			status = http.StatusServiceUnavailable
+		}
+		return status, failoverErr.ClientMessage
+	}
 	if failoverErr != nil && failoverErr.Reason == service.OpenAIUpstreamAccessStateReason && strings.TrimSpace(failoverErr.ClientMessage) != "" {
 		status := failoverErr.ClientStatusCode
 		if status <= 0 {
