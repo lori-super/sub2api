@@ -7,7 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +19,31 @@ import (
 )
 
 type mediaBridgeStorageTestEncryptor struct{}
+
+type mediaBridgeStorageProbeRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f mediaBridgeStorageProbeRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func mediaBridgeStorageTestProbeClient(t *testing.T) *http.Client {
+	t.Helper()
+	return &http.Client{Transport: mediaBridgeStorageProbeRoundTripper(func(request *http.Request) (*http.Response, error) {
+		require.Equal(t, http.MethodGet, request.Method)
+		require.Equal(t, "bytes=0-0", request.Header.Get("Range"))
+		require.Equal(t, "AWS4-HMAC-SHA256", request.URL.Query().Get("X-Amz-Algorithm"))
+		require.NotEmpty(t, request.URL.Query().Get("X-Amz-Credential"))
+		require.NotEmpty(t, request.URL.Query().Get("X-Amz-Signature"))
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header: http.Header{
+				"Content-Range": []string{fmt.Sprintf("bytes 0-0/%d", len("worldcodes-media-bridge-r2-probe"))},
+			},
+			Body:    io.NopCloser(strings.NewReader("w")),
+			Request: request,
+		}, nil
+	})}
+}
 
 func (mediaBridgeStorageTestEncryptor) Encrypt(plaintext string) (string, error) {
 	return "sealed:" + base64.RawStdEncoding.EncodeToString([]byte(plaintext)), nil
@@ -72,7 +99,7 @@ func (s *mediaBridgeStorageTestStore) PresignGet(context.Context, string, time.D
 	if s.signedURL != "" {
 		return s.signedURL, nil
 	}
-	return "https://media.example.test/probe?signature=test", nil
+	return "https://media.example.test/probe?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test%2Fcredential&X-Amz-Signature=test-signature", nil
 }
 
 func (s *mediaBridgeStorageTestStore) Head(context.Context, string) (TemporaryMediaObjectMetadata, error) {
@@ -100,7 +127,9 @@ func newMediaBridgeStorageRuntimeFixture(
 		stores = append(stores, store)
 		return store, nil
 	}
-	return NewMediaBridgeStorageRuntime(repo, encryptor, backup, factory), repo, &built, &stores
+	runtime := NewMediaBridgeStorageRuntime(repo, encryptor, backup, factory)
+	runtime.probeClient = mediaBridgeStorageTestProbeClient(t)
+	return runtime, repo, &built, &stores
 }
 
 func validMediaBridgeStorageInput() MediaBridgeStorageUpdateInput {
@@ -189,10 +218,61 @@ func TestProbeMediaBridgeInlineStoreRejectsSignedURLOnNonHTTPSPort(t *testing.T)
 		signedURL: "https://media.example.test:8443/probe?signature=test",
 	}
 
-	err := probeMediaBridgeInlineStore(context.Background(), store)
+	err := probeMediaBridgeInlineStore(context.Background(), store, nil)
 
 	require.ErrorContains(t, err, "unsupported authority")
 	require.True(t, store.deleted, "failed probes must still delete their temporary object")
+}
+
+func TestProbeMediaBridgeInlineStoreRejectsInvalidRangeDelivery(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       int
+		contentRange string
+		body         string
+	}{
+		{name: "range ignored", status: http.StatusOK, body: "worldcodes-media-bridge-r2-probe"},
+		{name: "forbidden", status: http.StatusForbidden, body: "forbidden"},
+		{name: "missing content range", status: http.StatusPartialContent, body: "w"},
+		{name: "wrong content range", status: http.StatusPartialContent, contentRange: "bytes 1-1/32", body: "w"},
+		{name: "wrong byte", status: http.StatusPartialContent, contentRange: "bytes 0-0/32", body: "x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &mediaBridgeStorageTestStore{}
+			client := &http.Client{Transport: mediaBridgeStorageProbeRoundTripper(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: tt.status,
+					Header:     http.Header{"Content-Range": []string{tt.contentRange}},
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    request,
+				}, nil
+			})}
+
+			err := probeMediaBridgeInlineStore(context.Background(), store, client)
+
+			require.Error(t, err)
+			require.True(t, store.deleted, "failed probes must delete their temporary object")
+		})
+	}
+}
+
+func TestProbeMediaBridgeInlineStoreRedactsSignedURLFromTransportError(t *testing.T) {
+	store := &mediaBridgeStorageTestStore{
+		signedURL: "https://media.example.test/probe?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=credential-secret&X-Amz-Signature=signature-secret",
+	}
+	client := &http.Client{Transport: mediaBridgeStorageProbeRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("fetch %s: EOF", request.URL.String())
+	})}
+
+	err := probeMediaBridgeInlineStore(context.Background(), store, client)
+
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "credential-secret")
+	require.NotContains(t, err.Error(), "signature-secret")
+	require.Contains(t, err.Error(), "X-Amz-Credential=***")
+	require.Contains(t, err.Error(), "X-Amz-Signature=***")
+	require.True(t, store.deleted, "failed probes must delete their temporary object")
 }
 
 func TestMediaBridgeStorageRuntimeUsesShortStaleCacheDuringDBFailure(t *testing.T) {
@@ -204,6 +284,7 @@ func TestMediaBridgeStorageRuntimeUsesShortStaleCacheDuringDBFailure(t *testing.
 		return &mediaBridgeStorageTestStore{id: cfg.Bucket}, nil
 	}
 	runtime := NewMediaBridgeStorageRuntime(repo, encryptor, backup, factory)
+	runtime.probeClient = mediaBridgeStorageTestProbeClient(t)
 
 	_, err := runtime.Update(context.Background(), validMediaBridgeStorageInput())
 	require.NoError(t, err)

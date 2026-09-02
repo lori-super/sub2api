@@ -1136,7 +1136,7 @@ export default {
           secretHint: 'Secret 为只写字段，不会回显；留空会保留当前值。',
           forcePathStyle: '强制 Path-style 寻址',
           forcePathStyleHint: 'Cloudflare R2 建议启用。',
-          credentialsHint: '保存和连接测试均需管理员二次验证。测试会执行小对象上传、HEAD、签名生成和删除；K3 拉取需单独做集成验证。',
+          credentialsHint: '保存和连接测试均需管理员二次验证。测试会执行小对象上传、鉴权 HEAD、签名 Range GET 和删除；请另行确认 R2.dev 与公开自定义域均已关闭。',
           ready: '已保存并通过探针',
           notReady: '尚未保存就绪配置',
           test: '测试连接',

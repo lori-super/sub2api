@@ -393,9 +393,18 @@ func validateOpenAIResponsesVideoInputCompatibility(input gjson.Result) error {
 		if err := validateOpenAIResponsesVideoPartCompatibility(item); err != nil {
 			return err
 		}
+		messageHasVideo := false
 		for _, part := range item.Get("content").Array() {
 			if err := validateOpenAIResponsesVideoPartCompatibility(part); err != nil {
 				return err
+			}
+			messageHasVideo = messageHasVideo || openAIResponsesPartIsVideo(part)
+		}
+		itemType := strings.TrimSpace(item.Get("type").String())
+		if messageHasVideo && (itemType == "" || itemType == "message") {
+			role := strings.TrimSpace(item.Get("role").String())
+			if role != "" && role != "user" {
+				return errors.New("video input is only supported in user messages on the Chat compatibility route")
 			}
 		}
 	}

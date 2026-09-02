@@ -371,14 +371,17 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 							continue
 						}
 					}
+					consumeSwitchBudget := shouldConsumeOpenAIAccountSwitchBudget(failoverErr)
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
-					if switchCount >= maxAccountSwitches {
-						h.handleFailoverExhausted(c, failoverErr, streamStarted)
-						return
+					if consumeSwitchBudget {
+						if switchCount >= maxAccountSwitches {
+							h.handleFailoverExhausted(c, failoverErr, streamStarted)
+							return
+						}
+						switchCount++
 					}
-					switchCount++
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount, &oauth429FailoverState) {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return

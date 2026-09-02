@@ -541,6 +541,64 @@ func TestOpenAIChatVideoBridgeMissingAPIKeyFailsOverAndReportsAccount(t *testing
 	require.True(t, failoverErr.ShouldReportAccountScheduleFailure())
 }
 
+func TestForwardAsChatCompletionsRejectsGrokVideoBeforeUploadOrDispatch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &memoryInlineMediaStore{}
+	upstream := &httpUpstreamRecorder{err: errors.New("upstream must not be called")}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	svc.SetOpenAIChatVideoBridge(newOpenAIChatVideoTestBridge(t, store, openAIChatVideoTestPolicy()))
+	body := []byte(fmt.Sprintf(`{"model":"kimi-k3","messages":[{"role":"user","content":[{"type":"video_url","video_url":{"url":%q}}]}]}`, testMP4DataURL(testMP4Bytes())))
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	account := &Account{
+		ID:       9,
+		Platform: PlatformGrok,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "xai-test",
+			"base_url": "https://api.x.ai",
+		},
+	}
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, GatewayFailureStageAccountAuth, failoverErr.Stage)
+	require.Equal(t, GatewayFailureScopeRequest, failoverErr.Scope)
+	require.Equal(t, OpenAIMediaBridgeChatAccountIncompatibleReason, failoverErr.Reason)
+	require.True(t, failoverErr.ShouldRetryNextAccount())
+	require.False(t, failoverErr.ShouldReportAccountScheduleFailure())
+	require.Zero(t, store.puts)
+	require.Empty(t, upstream.requests)
+	require.False(t, c.Writer.Written())
+}
+
+func TestOpenAIGatewayResponsesRejectsNonUserVideoBeforeUpload(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &memoryInlineMediaStore{}
+	upstream := &httpUpstreamRecorder{err: errors.New("upstream must not be called")}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	policy := openAIChatVideoTestPolicy()
+	policy.IngressProtocols = []string{MediaBridgeIngressOpenAIResponses}
+	svc.SetOpenAIChatVideoBridge(newOpenAIChatVideoTestBridge(t, store, policy))
+	body := []byte(fmt.Sprintf(`{"model":"kimi-k3","input":[{"type":"message","role":"assistant","content":[{"type":"input_video","video_url":%q}]}]}`, testMP4DataURL(testMP4Bytes())))
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+
+	result, err := svc.Forward(context.Background(), c, openAIChatVideoTestAccount(), body)
+	require.Nil(t, result)
+	bridgeErr, ok := AsOpenAIChatVideoBridgeError(err)
+	require.True(t, ok)
+	require.Equal(t, http.StatusBadRequest, bridgeErr.StatusCode)
+	require.Contains(t, bridgeErr.Message, "only supported in user messages")
+	require.Zero(t, store.puts)
+	require.Empty(t, upstream.requests)
+	require.False(t, c.Writer.Written())
+}
+
 func TestOpenAIChatVideoBridgeRejectsLossyForcedResponsesConversion(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	dataURL := testMP4DataURL(testMP4Bytes())

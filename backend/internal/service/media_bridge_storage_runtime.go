@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -125,6 +127,7 @@ type MediaBridgeStorageRuntime struct {
 	encryptor   SecretEncryptor
 	backup      *BackupService
 	factory     MediaBridgeInlineStoreFactory
+	probeClient *http.Client
 
 	updateMu sync.Mutex
 	mu       sync.Mutex
@@ -142,6 +145,11 @@ func NewMediaBridgeStorageRuntime(
 		encryptor:   encryptor,
 		backup:      backup,
 		factory:     factory,
+		probeClient: &http.Client{
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
@@ -234,7 +242,7 @@ func (s *MediaBridgeStorageRuntime) Update(
 	if err != nil || store == nil {
 		return MediaBridgeStorageSettings{}, errors.Join(ErrMediaBridgeStorageProbeFailed, err)
 	}
-	if err := probeMediaBridgeInlineStore(ctx, store); err != nil {
+	if err := probeMediaBridgeInlineStore(ctx, store, s.probeClient); err != nil {
 		return MediaBridgeStorageSettings{}, errors.Join(ErrMediaBridgeStorageProbeFailed, err)
 	}
 
@@ -299,7 +307,7 @@ func (s *MediaBridgeStorageRuntime) Test(
 	if err != nil || store == nil {
 		return MediaBridgeStorageSettings{}, errors.Join(ErrMediaBridgeStorageProbeFailed, err)
 	}
-	if err := probeMediaBridgeInlineStore(ctx, store); err != nil {
+	if err := probeMediaBridgeInlineStore(ctx, store, s.probeClient); err != nil {
 		return MediaBridgeStorageSettings{}, errors.Join(ErrMediaBridgeStorageProbeFailed, err)
 	}
 	public := publicMediaBridgeStorageSettings(persisted, true)
@@ -551,9 +559,12 @@ type mediaBridgeInlineStoreHead interface {
 	Head(context.Context, string) (TemporaryMediaObjectMetadata, error)
 }
 
-func probeMediaBridgeInlineStore(ctx context.Context, store InlineMediaStore) error {
+func probeMediaBridgeInlineStore(ctx context.Context, store InlineMediaStore, client *http.Client) error {
 	if store == nil {
 		return ErrTemporaryMediaUnavailable
+	}
+	if client == nil {
+		client = http.DefaultClient
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -587,6 +598,32 @@ func probeMediaBridgeInlineStore(ctx context.Context, store InlineMediaStore) er
 	}
 	if err := validateOpenAIChatVideoAssetURL(signedURL); err != nil {
 		return fmt.Errorf("probe returned an unsafe signed URL: %w", err)
+	}
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, signedURL, nil)
+	if err != nil {
+		return fmt.Errorf("create signed URL probe request: %w", err)
+	}
+	request.Header.Set("Range", "bytes=0-0")
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("download signed URL probe object: %s", sanitizeUpstreamErrorMessage(err.Error()))
+	}
+	downloading, readErr := io.ReadAll(io.LimitReader(response.Body, int64(len(payload)+1)))
+	closeErr := response.Body.Close()
+	if readErr != nil {
+		return fmt.Errorf("read signed URL probe object: %w", readErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close signed URL probe object: %w", closeErr)
+	}
+	if response.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("signed URL range probe returned status %d", response.StatusCode)
+	}
+	if response.Header.Get("Content-Range") != fmt.Sprintf("bytes 0-0/%d", len(payload)) {
+		return errors.New("signed URL range probe returned an invalid Content-Range")
+	}
+	if !bytes.Equal(downloading, payload[:1]) {
+		return errors.New("signed URL range probe content mismatch")
 	}
 	if headStore, ok := store.(mediaBridgeInlineStoreHead); ok {
 		metadata, err := headStore.Head(probeCtx, key)

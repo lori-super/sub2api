@@ -1142,7 +1142,7 @@ export default {
           secretHint: 'The secret is write-only and is never displayed. Leave it blank to preserve the current value.',
           forcePathStyle: 'Force path-style addressing',
           forcePathStyleHint: 'Recommended for Cloudflare R2.',
-          credentialsHint: 'Saving and connection tests require admin step-up verification. The probe uploads, HEADs, signs, and deletes a small object; K3 fetching is a separate integration check.',
+          credentialsHint: 'Saving and connection tests require admin step-up verification. The probe uploads, performs an authenticated HEAD and a signed Range GET, then deletes a small object. Separately verify that R2.dev and public custom domains are disabled.',
           ready: 'Saved and probe-validated',
           notReady: 'No ready saved configuration',
           test: 'Test connection',
