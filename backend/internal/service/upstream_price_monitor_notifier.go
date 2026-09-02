@@ -726,6 +726,7 @@ func formatUpstreamPriceMonitorVector(vector domain.UpstreamPriceVector, zh bool
 	return strings.Join(parts, "; ")
 }
 
+//nolint:unused // Retained for rendering notifications from legacy monitor snapshots.
 func formatUpstreamPriceMonitorMultiplier(current, suggested *float64) string {
 	if current == nil && suggested == nil {
 		return "-"

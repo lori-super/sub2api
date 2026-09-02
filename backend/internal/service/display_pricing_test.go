@@ -293,7 +293,7 @@ func TestDisplayPricingGlobalMultiplierRejectsHiddenMarkup(t *testing.T) {
 	require.ErrorIs(t, err, ErrDisplayGlobalLocked)
 	require.Equal(t, 1.2, repo.settings.GlobalMultiplier, "rejected update must not write")
 
-	settings, err = svc.UpdateSettings(context.Background(), DisplayGlobalMultiplier)
+	_, err = svc.UpdateSettings(context.Background(), DisplayGlobalMultiplier)
 	require.NoError(t, err)
 	require.Equal(t, DisplayGlobalMultiplier, repo.settings.GlobalMultiplier)
 }

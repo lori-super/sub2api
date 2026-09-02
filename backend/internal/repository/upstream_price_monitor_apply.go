@@ -70,6 +70,7 @@ type upstreamPriceRollbackSnapshot struct {
 	Intervals []upstreamPriceIntervalRollback `json:"intervals"`
 }
 
+//nolint:unused // Kept with the legacy rollback snapshot decoder for backward-compatible snapshots.
 type lockedPerRequestInterval struct {
 	rollback  upstreamPriceIntervalRollback
 	minTokens int64
@@ -608,6 +609,7 @@ func assertTokenChannelSnapshot(
 	return nil
 }
 
+//nolint:unused // Retained for validating rollback snapshots written by older monitor runs.
 func assertPerRequestChannelSnapshot(
 	channel upstreamPriceChannelRollback,
 	intervals []lockedPerRequestInterval,
@@ -667,6 +669,7 @@ func effectivePerMillion(base *string, override, multiplier sql.NullString) (*fl
 	return &result, nil
 }
 
+//nolint:unused // Retained by the legacy per-request rollback validation path.
 func numericStringFloatPtr(value *string) (*float64, error) {
 	if value == nil {
 		return nil, nil
@@ -679,6 +682,7 @@ func numericStringFloatPtr(value *string) (*float64, error) {
 	return &result, nil
 }
 
+//nolint:unused // Retained by the legacy per-request rollback validation path.
 func nullNumericFloatPtr(value sql.NullString) (*float64, error) {
 	return numericStringFloatPtr(nullStringPtr(value))
 }
@@ -1209,6 +1213,7 @@ func validateUpstreamPriceApplyEvidence(items []upstreamPriceApplyEvidence, _ bo
 	return nil
 }
 
+//nolint:unused // Documents and preserves the fail-closed legacy apply boundary.
 func applyUpstreamPerRequestEvidence(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -1268,6 +1273,7 @@ func intervalRollbackWithAfter(before upstreamPriceIntervalRollback, input, outp
 	return before
 }
 
+//nolint:unused // Required to interpret legacy rollback records if page-driven pricing is reverted.
 func displayRollbackWithAfter(before upstreamPriceDisplayRollback, multiplier, low, middle, high any) upstreamPriceDisplayRollback {
 	before.AfterModelMultiplier = numericAfter(before.ModelMultiplier, multiplier)
 	before.AfterPerRequestLTE256K = numericAfter(before.PerRequestLTE256K, low)

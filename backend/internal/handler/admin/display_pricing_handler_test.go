@@ -143,7 +143,8 @@ func TestDisplayPricingProviderCRUDHandlers(t *testing.T) {
 	require.Equal(t, http.StatusCreated, create.Code)
 	var createResponse response.Response
 	require.NoError(t, json.Unmarshal(create.Body.Bytes(), &createResponse))
-	createData := createResponse.Data.(map[string]any)
+	createData, ok := createResponse.Data.(map[string]any)
+	require.True(t, ok)
 	require.Equal(t, "custom", createData["logo_key"])
 	require.Equal(t, "https://cdn.example.com/custom.svg", createData["logo_url"])
 	require.Equal(t, "Token note", createData["provider_note"])

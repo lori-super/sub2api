@@ -14,7 +14,8 @@ func TestSyncTokenPricesAtomicallyUpdatesChannelBaseIntervalAndCreatesDisplay(t 
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
-	repo := NewUpstreamPriceMonitorRepository(db).(*upstreamPriceMonitorRepository)
+	repo, ok := NewUpstreamPriceMonitorRepository(db).(*upstreamPriceMonitorRepository)
+	require.True(t, ok)
 	officialInput, input, output, cacheWrite, cacheRead := 17.5, 0.129, 0.37908, 0.00084, 0.01284
 	updates := []service.UpstreamTokenPriceUpdate{{
 		ModelName: "qwen3.8-flash", Provider: "qwen", OfficialInput: &officialInput,
@@ -64,7 +65,8 @@ func TestSyncTokenPricesRollsBackWhenAnyConfiguredModelHasNoChannelRow(t *testin
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
-	repo := NewUpstreamPriceMonitorRepository(db).(*upstreamPriceMonitorRepository)
+	repo, ok := NewUpstreamPriceMonitorRepository(db).(*upstreamPriceMonitorRepository)
+	require.True(t, ok)
 	input, output := 0.1, 0.2
 	updates := []service.UpstreamTokenPriceUpdate{
 		{ModelName: "deepseek-v4-flash-0731", Provider: "deepseek", InputPerMillion: &input, OutputPerMillion: &output},
@@ -95,7 +97,8 @@ func TestSyncTokenPricesRollsBackOnDuplicateSingleModelRowsInOneChannel(t *testi
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
-	repo := NewUpstreamPriceMonitorRepository(db).(*upstreamPriceMonitorRepository)
+	repo, ok := NewUpstreamPriceMonitorRepository(db).(*upstreamPriceMonitorRepository)
+	require.True(t, ok)
 	input, output := 0.1, 0.2
 	updates := []service.UpstreamTokenPriceUpdate{{
 		ModelName: "deepseek-v4-flash-0731", Provider: "deepseek",

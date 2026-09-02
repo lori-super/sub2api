@@ -375,7 +375,7 @@ func directNodeText(node *html.Node) string {
 	var builder strings.Builder
 	for child := node.FirstChild; child != nil; child = child.NextSibling {
 		if child.Type == html.TextNode {
-			builder.WriteString(child.Data)
+			_, _ = builder.WriteString(child.Data)
 		}
 	}
 	return builder.String()
@@ -422,7 +422,7 @@ func htmlNodeText(node *html.Node) string {
 	var walk func(*html.Node)
 	walk = func(current *html.Node) {
 		if current.Type == html.TextNode {
-			builder.WriteString(current.Data)
+			_, _ = builder.WriteString(current.Data)
 		}
 		for child := current.FirstChild; child != nil; child = child.NextSibling {
 			walk(child)

@@ -530,12 +530,11 @@ func normalizeDomesticModelAllowlist(models []string) ([]string, error) {
 		if trimmed == "" || len(trimmed) > 255 || strings.ContainsAny(trimmed, " \t\r\n,") {
 			return nil, ErrUpstreamPriceMonitorInvalidConfig
 		}
-		canonical := trimmed
 		known, ok := allowed[strings.ToLower(trimmed)]
 		if !ok {
 			return nil, ErrUpstreamPriceMonitorInvalidConfig
 		}
-		canonical = known
+		canonical := known
 		key := strings.ToLower(canonical)
 		if _, exists := seen[key]; exists {
 			continue
@@ -1062,6 +1061,7 @@ func sameUpstreamPriceNonModelConfig(a, b *domain.UpstreamPriceMonitorConfig) bo
 	return true
 }
 
+//nolint:unused // Retained for backward-compatible reconciliation of legacy paid-probe evidence.
 func (s *UpstreamPriceMonitorService) reconcileAccount(
 	ctx context.Context,
 	runID int64,
@@ -1219,12 +1219,7 @@ func (s *UpstreamPriceMonitorService) reconcileAccount(
 		if obsErr != nil {
 			errs = append(errs, model+": observations: "+obsErr.Error())
 		} else {
-			observations = append(observations, domain.UpstreamPriceObservation{
-				Requests:    remoteDelta.Requests,
-				InputTokens: remoteDelta.InputTokens, OutputTokens: remoteDelta.OutputTokens,
-				CacheCreationTokens: remoteDelta.CacheCreationTokens, CacheReadTokens: remoteDelta.CacheReadTokens,
-				ActualCost: remoteDelta.ActualCost,
-			})
+			observations = append(observations, domain.UpstreamPriceObservation(remoteDelta))
 			prices, sampleCount, solveErr := SolveUpstreamTokenPrices(observations)
 			evidence.SampleCount = sampleCount
 			if solveErr == nil && billing != nil {
@@ -1245,6 +1240,7 @@ func (s *UpstreamPriceMonitorService) reconcileAccount(
 	return matched, mismatched, errors.Join(stringErrors(errs)...)
 }
 
+//nolint:unused // Retained with the legacy active-probe worker implementation below.
 type upstreamPriceActiveProbeResult struct {
 	probed bool
 	cost   float64
@@ -1580,6 +1576,7 @@ func missingUpstreamPriceProbeModels(
 	return missing
 }
 
+//nolint:unused // Retained for manually recovering legacy active-probe monitor runs.
 func (s *UpstreamPriceMonitorService) probeMissingUpstreamPriceModels(
 	ctx context.Context,
 	runID int64,
@@ -1879,12 +1876,7 @@ func (s *UpstreamPriceMonitorService) probeOneUpstreamPriceModel(
 		if recordErr != nil {
 			return len(observations) > 0, probeCost, recordErr
 		}
-		observations = append(observations, domain.UpstreamPriceObservation{
-			Requests:    remoteDelta.Requests,
-			InputTokens: remoteDelta.InputTokens, OutputTokens: remoteDelta.OutputTokens,
-			CacheCreationTokens: remoteDelta.CacheCreationTokens, CacheReadTokens: remoteDelta.CacheReadTokens,
-			ActualCost: remoteDelta.ActualCost,
-		})
+		observations = append(observations, domain.UpstreamPriceObservation(remoteDelta))
 		if sendErr != nil {
 			notes = append(notes, "probe response failed after one attributable ledger charge: "+sendErr.Error())
 		}
@@ -2535,6 +2527,7 @@ func upstreamPriceEvidenceHash(evidence []domain.UpstreamPriceEvidence) string {
 	return hex.EncodeToString(sum[:])
 }
 
+//nolint:unused // Used only by the retained legacy reconciliation implementation.
 func stringErrors(values []string) []error {
 	out := make([]error, 0, len(values))
 	for _, value := range values {
