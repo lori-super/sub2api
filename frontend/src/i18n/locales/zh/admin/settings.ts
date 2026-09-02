@@ -994,6 +994,17 @@ export default {
         saved: '过载冷却设置保存成功',
         saveFailed: '保存过载冷却设置失败'
       },
+      openaiTransportErrorCooldown: {
+        title: '上游网络故障摘号',
+        description: '配置 OpenAI 兼容账号遇到连接拒绝、DNS 或路由故障时是否暂时退出调度；保存后无需重启，下一次故障立即生效',
+        enabled: '启用网络故障自动摘号',
+        enabledHint: '关闭后当前请求仍会返回上游错误并尝试故障转移，但不会因为网络错误锁定账号',
+        cooldownSeconds: '摘除时长（秒）',
+        cooldownSecondsHint: '账号暂停调度的持续时间（1-7200 秒）',
+        activeCooldownHint: '关闭此开关会立即恢复由该策略摘除的账号；修改摘除时长则从下一次网络故障开始生效。',
+        saved: '上游网络故障摘号设置已热更新',
+        saveFailed: '保存上游网络故障摘号设置失败'
+      },
       rateLimit429Cooldown: {
         title: '429 默认回避',
         description: '配置上游返回 429 且没有明确重置时间时的默认账号回避策略',

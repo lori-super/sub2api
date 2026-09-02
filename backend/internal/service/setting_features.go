@@ -664,6 +664,56 @@ func (s *SettingService) GetFallbackModel(ctx context.Context, platform string) 
 	return value
 }
 
+// GetOpenAITransportErrorCooldownSettings reads the transport-failure scheduling
+// policy directly from the shared settings store. It intentionally has no
+// process-local TTL so an admin update applies to the next transport failure on
+// every gateway instance without a restart.
+func (s *SettingService) GetOpenAITransportErrorCooldownSettings(ctx context.Context) (*OpenAITransportErrorCooldownSettings, error) {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyOpenAITransportErrorCooldownSettings)
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			return DefaultOpenAITransportErrorCooldownSettings(), nil
+		}
+		return nil, fmt.Errorf("get OpenAI transport error cooldown settings: %w", err)
+	}
+	if value == "" {
+		return DefaultOpenAITransportErrorCooldownSettings(), nil
+	}
+
+	var settings OpenAITransportErrorCooldownSettings
+	if err := json.Unmarshal([]byte(value), &settings); err != nil {
+		return DefaultOpenAITransportErrorCooldownSettings(), nil
+	}
+	if settings.CooldownSeconds < 1 {
+		settings.CooldownSeconds = 1
+	}
+	if settings.CooldownSeconds > 7200 {
+		settings.CooldownSeconds = 7200
+	}
+	return &settings, nil
+}
+
+// SetOpenAITransportErrorCooldownSettings persists the runtime policy. Callers
+// do not need to restart gateway processes because reads happen on the failure
+// path rather than through a boot-time config snapshot.
+func (s *SettingService) SetOpenAITransportErrorCooldownSettings(ctx context.Context, settings *OpenAITransportErrorCooldownSettings) error {
+	if settings == nil {
+		return fmt.Errorf("settings cannot be nil")
+	}
+	if settings.CooldownSeconds < 1 || settings.CooldownSeconds > 7200 {
+		if settings.Enabled {
+			return fmt.Errorf("cooldown_seconds must be between 1-7200")
+		}
+		settings.CooldownSeconds = DefaultOpenAITransportErrorCooldownSettings().CooldownSeconds
+	}
+
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("marshal OpenAI transport error cooldown settings: %w", err)
+	}
+	return s.settingRepo.Set(ctx, SettingKeyOpenAITransportErrorCooldownSettings, string(data))
+}
+
 // GetOverloadCooldownSettings 获取529过载冷却配置
 func (s *SettingService) GetOverloadCooldownSettings(ctx context.Context) (*OverloadCooldownSettings, error) {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyOverloadCooldownSettings)

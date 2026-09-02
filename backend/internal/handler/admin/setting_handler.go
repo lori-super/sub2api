@@ -63,6 +63,14 @@ type SettingHandler struct {
 	totpService              *service.TotpService
 	userService              *service.UserService
 	mediaBridgeStorage       *service.MediaBridgeStorageRuntime
+	openAIGatewayService     *service.OpenAIGatewayService
+}
+
+// SetOpenAIGatewayService attaches the runtime account blocker so disabling
+// transport-error cooldown can immediately restore accounts paused by that
+// policy without restarting the gateway.
+func (h *SettingHandler) SetOpenAIGatewayService(openAI *service.OpenAIGatewayService) {
+	h.openAIGatewayService = openAI
 }
 
 // NewSettingHandler 创建系统设置处理器

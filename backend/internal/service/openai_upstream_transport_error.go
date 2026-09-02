@@ -14,9 +14,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// openAITransportErrorTempUnschedDuration is how long an account is temporarily
-// unscheduled after a durable transport failure (matches tokenRefreshTempUnschedDuration).
+// openAITransportErrorTempUnschedDuration is the compatibility default used
+// when no runtime setting has been saved or the settings store is unavailable.
 const openAITransportErrorTempUnschedDuration = 10 * time.Minute
+
+const openAITransportErrorTempUnschedReasonPrefix = "upstream transport error (proxy/network): "
 
 // openAITransportFailoverBody is the OpenAI-format error body attached to the
 // failover error for a transport-level failure. Kept identical to the legacy
@@ -136,7 +138,18 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 	}
 
 	if classifyUpstreamTransportError(err).Persistent {
-		s.tempUnscheduleOpenAITransportError(ctx, account, safeErr)
+		enabled, cooldown := s.openAITransportErrorCooldown(ctx, account)
+		if enabled {
+			s.tempUnscheduleOpenAITransportError(ctx, account, safeErr, cooldown)
+		} else {
+			logger.L().With(zap.String("component", "service.openai_gateway")).Warn(
+				"openai.account_temp_unschedule_transport_disabled",
+				zap.Int64("account_id", account.ID),
+				zap.String("account_name", account.Name),
+				zap.String("platform", account.Platform),
+				zap.String("reason", safeErr),
+			)
+		}
 	}
 
 	return &UpstreamFailoverError{
@@ -156,12 +169,36 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 //     accountRepo is nil (in-memory only; no persistence).
 //   - "openai.account_temp_unscheduled_transport_failed" — DB write attempted
 //     but returned an error.
-func (s *OpenAIGatewayService) tempUnscheduleOpenAITransportError(ctx context.Context, account *Account, safeErr string) {
+func (s *OpenAIGatewayService) openAITransportErrorCooldown(ctx context.Context, account *Account) (bool, time.Duration) {
+	defaults := DefaultOpenAITransportErrorCooldownSettings()
+	if s == nil || s.settingService == nil {
+		return defaults.Enabled, time.Duration(defaults.CooldownSeconds) * time.Second
+	}
+
+	settings, err := s.settingService.GetOpenAITransportErrorCooldownSettings(ctx)
+	if err != nil || settings == nil {
+		fields := []zap.Field{zap.Error(err)}
+		if account != nil {
+			fields = append(fields, zap.Int64("account_id", account.ID))
+		}
+		logger.L().With(zap.String("component", "service.openai_gateway")).Warn(
+			"openai.transport_error_cooldown_settings_failed",
+			fields...,
+		)
+		return defaults.Enabled, time.Duration(defaults.CooldownSeconds) * time.Second
+	}
+	return settings.Enabled, time.Duration(settings.CooldownSeconds) * time.Second
+}
+
+func (s *OpenAIGatewayService) tempUnscheduleOpenAITransportError(ctx context.Context, account *Account, safeErr string, cooldown time.Duration) {
 	if s == nil || account == nil {
 		return
 	}
-	until := time.Now().Add(openAITransportErrorTempUnschedDuration)
-	reason := "upstream transport error (proxy/network): " + safeErr
+	if cooldown <= 0 {
+		cooldown = openAITransportErrorTempUnschedDuration
+	}
+	until := time.Now().Add(cooldown)
+	reason := openAITransportErrorTempUnschedReasonPrefix + safeErr
 
 	// Immediate in-memory block (honoured by the scheduler at selection time),
 	// effective even if the DB write below fails or the account cache lags.
@@ -201,4 +238,36 @@ func (s *OpenAIGatewayService) tempUnscheduleOpenAITransportError(ctx context.Co
 		zap.Time("until", until),
 		zap.String("reason", reason),
 	)
+}
+
+// ClearOpenAITransportErrorCooldowns immediately restores accounts that are
+// currently paused specifically by this transport-failure policy. It is called
+// when an administrator hot-disables the policy; unrelated temporary account
+// states are deliberately left untouched.
+func (s *OpenAIGatewayService) ClearOpenAITransportErrorCooldowns(ctx context.Context) (int, error) {
+	if s == nil || s.accountRepo == nil {
+		return 0, nil
+	}
+	accounts, err := s.accountRepo.ListActive(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	now := time.Now()
+	cleared := 0
+	var clearErrors []error
+	for i := range accounts {
+		account := &accounts[i]
+		if account.TempUnschedulableUntil == nil || !account.TempUnschedulableUntil.After(now) ||
+			!strings.HasPrefix(strings.TrimSpace(account.TempUnschedulableReason), openAITransportErrorTempUnschedReasonPrefix) {
+			continue
+		}
+		if err := s.accountRepo.ClearTempUnschedulable(ctx, account.ID); err != nil {
+			clearErrors = append(clearErrors, err)
+			continue
+		}
+		s.ClearAccountSchedulingBlock(account.ID)
+		cleared++
+	}
+	return cleared, errors.Join(clearErrors...)
 }

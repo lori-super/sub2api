@@ -1000,6 +1000,17 @@ export default {
         saved: 'Overload cooldown settings saved',
         saveFailed: 'Failed to save overload cooldown settings'
       },
+      openaiTransportErrorCooldown: {
+        title: 'Upstream Network Failure Cooldown',
+        description: 'Control whether OpenAI-compatible accounts leave scheduling after connection-refused, DNS, or routing failures. Saves take effect on the next failure without a restart.',
+        enabled: 'Enable automatic network-failure cooldown',
+        enabledHint: 'When disabled, the current request still returns an upstream error and may fail over, but the account is not locked by the network failure.',
+        cooldownSeconds: 'Cooldown Duration (seconds)',
+        cooldownSecondsHint: 'How long the account stays out of scheduling (1-7200 seconds)',
+        activeCooldownHint: 'Disabling this switch immediately restores accounts paused by this policy. Duration changes apply from the next network failure.',
+        saved: 'Upstream network failure cooldown hot-updated',
+        saveFailed: 'Failed to save upstream network failure cooldown settings'
+      },
       rateLimit429Cooldown: {
         title: '429 Default Cooldown',
         description: 'Configure the default account cooldown when upstream returns 429 without an explicit reset time',

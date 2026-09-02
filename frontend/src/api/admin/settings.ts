@@ -1288,6 +1288,30 @@ export async function updateOverloadCooldownSettings(
   return data;
 }
 
+// ==================== OpenAI Transport Error Cooldown ====================
+
+export interface OpenAITransportErrorCooldownSettings {
+  enabled: boolean;
+  cooldown_seconds: number;
+}
+
+export async function getOpenAITransportErrorCooldownSettings(): Promise<OpenAITransportErrorCooldownSettings> {
+  const { data } = await apiClient.get<OpenAITransportErrorCooldownSettings>(
+    "/admin/settings/openai-transport-error-cooldown",
+  );
+  return data;
+}
+
+export async function updateOpenAITransportErrorCooldownSettings(
+  settings: OpenAITransportErrorCooldownSettings,
+): Promise<OpenAITransportErrorCooldownSettings> {
+  const { data } = await apiClient.put<OpenAITransportErrorCooldownSettings>(
+    "/admin/settings/openai-transport-error-cooldown",
+    settings,
+  );
+  return data;
+}
+
 // ==================== 429 Rate Limit Cooldown Settings ====================
 
 export interface RateLimit429CooldownSettings {
@@ -1785,6 +1809,8 @@ export const settingsAPI = {
   deleteAdminApiKey,
   getOverloadCooldownSettings,
   updateOverloadCooldownSettings,
+  getOpenAITransportErrorCooldownSettings,
+  updateOpenAITransportErrorCooldownSettings,
   getRateLimit429CooldownSettings,
   updateRateLimit429CooldownSettings,
   getPanelRateLimitSettings,
