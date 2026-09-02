@@ -558,6 +558,7 @@ function mountView() {
         GroupOptionItem: true,
         ProxySelector: true,
         ImageUpload: ImageUploadStub,
+        MediaBridgeSettings: true,
         BackupSettings: true,
       },
     },

@@ -26,6 +26,8 @@ func loggedFields(t *testing.T, logs *observer.ObservedLogs) map[string]any {
 		switch f.Key {
 		case "body_len":
 			fields[f.Key] = int(f.Integer)
+		case "payload_redacted":
+			fields[f.Key] = f.Integer == 1
 		case "error":
 			fields[f.Key] = f.Interface.(error).Error()
 		default:
@@ -91,6 +93,32 @@ func TestLogRequestBodyParseFailure_EscapesControlCharacters(t *testing.T) {
 	require.NotContains(t, head, "\x01")
 	require.Contains(t, head, `\n`)
 	require.Contains(t, head, `\x01`)
+}
+
+func TestLogRequestBodyParseFailure_RedactsBase64DataURI(t *testing.T) {
+	log, logs := newObservedLogger(t)
+	body := []byte(`{"model":"kimi-k3","input":[{"type":"input_video","video_url":"DATA:VIDEO/MP4;BASE64,AAAA-secret-media`) // malformed on purpose
+
+	logRequestBodyParseFailure(log, body, nil)
+
+	fields := loggedFields(t, logs)
+	require.Equal(t, len(body), fields["body_len"])
+	require.Equal(t, true, fields["payload_redacted"])
+	require.NotContains(t, fields, "body_head")
+	require.NotContains(t, fields, "body_tail")
+}
+
+func TestLogMediaRequestBodyParseFailure_AlwaysRedactsEscapedDataURI(t *testing.T) {
+	log, logs := newObservedLogger(t)
+	body := []byte(`{"model":"kimi-k3","video_url":"data\u003avideo/mp4;\u0062ase64,AAAA-secret-media`)
+
+	logMediaRequestBodyParseFailure(log, body, nil)
+
+	fields := loggedFields(t, logs)
+	require.Equal(t, len(body), fields["body_len"])
+	require.Equal(t, true, fields["payload_redacted"])
+	require.NotContains(t, fields, "body_head")
+	require.NotContains(t, fields, "body_tail")
 }
 
 func TestLogRequestBodyParseFailure_NilLoggerNoPanic(t *testing.T) {

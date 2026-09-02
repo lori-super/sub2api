@@ -150,6 +150,15 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	requestView := newOpenAIRequestView(body)
 	reqModel, reqStream, promptCacheKey := requestView.Model, requestView.Stream, requestView.PromptCacheKey
 	originalModel := reqModel
+	videoBillingModel := resolveOpenAIForwardModel(account, reqModel, "")
+	videoUpstreamModel := normalizeOpenAIModelForUpstream(account, videoBillingModel)
+	forceChatVideo, err := s.shouldForceChatVideoEgress(ctx, c, account, videoUpstreamModel, body)
+	if err != nil {
+		return nil, err
+	}
+	if forceChatVideo {
+		return s.forwardResponsesViaRawChatCompletions(ctx, c, account, body)
+	}
 
 	if account.Platform == PlatformGrok {
 		return s.forwardGrokResponses(ctx, c, account, body, originalModel, reqStream, startTime)

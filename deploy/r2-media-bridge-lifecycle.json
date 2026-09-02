@@ -1,0 +1,23 @@
+{
+  "rules": [
+    {
+      "id": "worldcodes-media-bridge-24h",
+      "enabled": true,
+      "conditions": {
+        "prefix": "media-bridge/"
+      },
+      "deleteObjectsTransition": {
+        "condition": {
+          "type": "Age",
+          "maxAge": 86400
+        }
+      },
+      "abortMultipartUploadsTransition": {
+        "condition": {
+          "type": "Age",
+          "maxAge": 86400
+        }
+      }
+    }
+  ]
+}

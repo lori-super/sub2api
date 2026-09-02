@@ -132,7 +132,9 @@ func ProvideOpenAIGatewayHandler(
 	contentModerationService *service.ContentModerationService,
 	opsService *service.OpsService,
 	grokQuotaService *service.GrokQuotaService,
+	mediaBridgeStorage *service.MediaBridgeStorageRuntime,
 	cfg *config.Config,
+	settingService *service.SettingService,
 	coordinator *securityaudit.Coordinator,
 ) *OpenAIGatewayHandler {
 	gatewayService.SetPluginManager(pluginManager)
@@ -140,6 +142,13 @@ func ProvideOpenAIGatewayHandler(
 		usageRecordWorkerPool, errorPassthroughService, contentModerationService, opsService, cfg)
 	h.securityAuditCoordinator = coordinator
 	h.grokMediaEligibilityProber = grokQuotaService
+	if bridge, err := service.NewOpenAIChatVideoBridge(service.NewUnavailableInlineMediaStore(), service.NewSettingOpenAIChatVideoBridgePolicyProvider(settingService)); err == nil {
+		bridge.SetStoreResolver(mediaBridgeStorage)
+		bridge.SetCapacity(service.NewMediaBridgeCapacity(service.NewMediaBridgeMemoryPolicy(settingService)))
+		bridge.SetBodyCapacity(service.NewMediaBridgeCapacity(service.NewMediaBridgeMemoryPolicy(settingService)))
+		bridge.SetR2Circuit(service.NewMediaBridgeR2Circuit(settingService))
+		gatewayService.SetOpenAIChatVideoBridge(bridge)
+	}
 	return h
 }
 
@@ -167,11 +176,12 @@ func ProvideSettingHandler(settingService *service.SettingService, buildInfo Bui
 }
 
 // ProvideAdminSettingHandler creates admin.SettingHandler with notification template APIs.
-func ProvideAdminSettingHandler(settingService *service.SettingService, emailService *service.EmailService, turnstileService *service.TurnstileService, aliyunCaptchaService *service.AliyunCaptchaService, opsService *service.OpsService, paymentConfigService *service.PaymentConfigService, paymentService *service.PaymentService, userAttributeService *service.UserAttributeService, notificationEmailService *service.NotificationEmailService, totpService *service.TotpService, userService *service.UserService) *admin.SettingHandler {
+func ProvideAdminSettingHandler(settingService *service.SettingService, emailService *service.EmailService, turnstileService *service.TurnstileService, aliyunCaptchaService *service.AliyunCaptchaService, opsService *service.OpsService, paymentConfigService *service.PaymentConfigService, paymentService *service.PaymentService, userAttributeService *service.UserAttributeService, notificationEmailService *service.NotificationEmailService, totpService *service.TotpService, userService *service.UserService, mediaBridgeStorage *service.MediaBridgeStorageRuntime) *admin.SettingHandler {
 	h := admin.NewSettingHandler(settingService, emailService, turnstileService, opsService, paymentConfigService, paymentService, userAttributeService)
 	h.SetNotificationEmailService(notificationEmailService)
 	h.SetAliyunCaptchaService(aliyunCaptchaService)
 	h.SetStepUpDeps(totpService, userService)
+	h.SetMediaBridgeStorageRuntime(mediaBridgeStorage)
 	return h
 }
 

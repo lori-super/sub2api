@@ -701,6 +701,17 @@ func ProvideBackupService(
 	return svc
 }
 
+// ProvideMediaBridgeStorageRuntime owns the encrypted, administrator-managed
+// R2 configuration and publishes immutable per-request store snapshots.
+func ProvideMediaBridgeStorageRuntime(
+	settingRepo SettingRepository,
+	encryptor SecretEncryptor,
+	backup *BackupService,
+	factory MediaBridgeInlineStoreFactory,
+) *MediaBridgeStorageRuntime {
+	return NewMediaBridgeStorageRuntime(settingRepo, encryptor, backup, factory)
+}
+
 // ProvideOpsService constructs OpsService and wires the SettingService-backed quota
 // auto-pause cache sink. Mirrors the SetCleanupReloader pattern: OpsService doesn't
 // hold a *SettingService reference, but wire injects a tiny callback so writes to
@@ -912,6 +923,7 @@ var ProviderSet = wire.NewSet(
 	ProvideSettingService,
 	NewDataManagementService,
 	ProvideBackupService,
+	ProvideMediaBridgeStorageRuntime,
 	ProvideOpsSystemLogSink,
 	ProvideOpsService,
 	ProvideOpsIngressRejectAggregator,

@@ -38,7 +38,7 @@ func RegisterGatewayRoutes(
 	clientRequestID := middleware.ClientRequestID()
 	opsErrorLogger := handler.OpsErrorLoggerMiddleware(opsService)
 	endpointNorm := handler.InboundEndpointMiddleware()
-	compositeTarget := compositeTargetPlatformMiddleware(compositeResolver)
+	compositeTarget := compositeTargetPlatformMiddleware(compositeResolver, h.OpenAIGateway)
 	compositeGeminiTarget := compositeGeminiTargetPlatformMiddleware(compositeResolver)
 
 	// 未分组 Key 拦截中间件（按协议格式区分错误响应）
@@ -526,9 +526,21 @@ func getGroupPlatform(c *gin.Context) string {
 	return apiKey.Group.Platform
 }
 
-func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver) gin.HandlerFunc {
+type compositeMediaBridgeBodyAdmission interface {
+	PrepareMediaBridgeRequestBody(*gin.Context) bool
+	CleanupMediaBridgeRequestBody(*gin.Context)
+}
+
+func compositeTargetPlatformMiddleware(
+	resolver *service.CompositeRouteResolver,
+	mediaBridgeAdmissions ...compositeMediaBridgeBodyAdmission,
+) gin.HandlerFunc {
 	if resolver == nil {
 		resolver = service.NewCompositeRouteResolver(nil)
+	}
+	var mediaBridgeAdmission compositeMediaBridgeBodyAdmission
+	if len(mediaBridgeAdmissions) > 0 {
+		mediaBridgeAdmission = mediaBridgeAdmissions[0]
 	}
 	return func(c *gin.Context) {
 		apiKey, ok := middleware.GetAPIKeyFromContext(c)
@@ -539,6 +551,13 @@ func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver)
 		if c.Request == nil || c.Request.Method == http.MethodGet {
 			c.Next()
 			return
+		}
+		if mediaBridgeAdmission != nil && compositeMediaBridgeIngressPath(c.Request.URL.Path) {
+			if !mediaBridgeAdmission.PrepareMediaBridgeRequestBody(c) {
+				c.Abort()
+				return
+			}
+			defer mediaBridgeAdmission.CleanupMediaBridgeRequestBody(c)
 		}
 
 		body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
@@ -577,6 +596,12 @@ func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver)
 		resetRequestBody(c, body)
 		c.Next()
 	}
+}
+
+func compositeMediaBridgeIngressPath(requestPath string) bool {
+	requestPath = strings.ToLower(strings.TrimRight(strings.TrimSpace(requestPath), "/"))
+	return strings.HasSuffix(requestPath, "/chat/completions") ||
+		strings.HasSuffix(requestPath, "/responses")
 }
 
 func compositeRequestModelFromBody(contentType string, body []byte) string {

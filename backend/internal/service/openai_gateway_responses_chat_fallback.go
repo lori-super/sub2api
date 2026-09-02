@@ -27,6 +27,19 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 ) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
 	upstreamCacheIdentity := x5M5XCacheIdentity(c, account, body)
+	// Materialize Responses inline video before decoding the full protocol
+	// request. Keeping the large base64 value out of json.Unmarshal and the
+	// Responses -> Chat conversion avoids several request-sized copies.
+	preMaterializeModel := newOpenAIRequestView(body).Model
+	if preMaterializeModel != "" {
+		billingModel := resolveOpenAIForwardModel(account, preMaterializeModel, "")
+		upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+		var err error
+		body, _, err = s.materializeResponsesVideoDataURLs(ctx, c, account, upstreamModel, body)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	var responsesReq apicompat.ResponsesRequest
 	if err := json.Unmarshal(body, &responsesReq); err != nil {

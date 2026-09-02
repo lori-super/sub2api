@@ -5,6 +5,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,42 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestForwardResponses_EligibleVideoForcesChatAndRestoresResponses(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(fmt.Sprintf(`{"model":"kimi-k3","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"describe"},{"type":"input_video","video_url":%q}]}],"stream":false}`, testMP4DataURL(testMP4Bytes())))
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"chatcmpl_video","object":"chat.completion","model":"kimi-k3","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":2,"total_tokens":11}}`,
+		)),
+	}}
+	store := &memoryInlineMediaStore{}
+	svc := &OpenAIGatewayService{
+		cfg:             rawChatCompletionsTestConfig(),
+		httpUpstream:    upstream,
+		chatVideoBridge: newOpenAIChatVideoTestBridge(t, store, openAIChatVideoTestPolicy()),
+	}
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: true}
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "http://upstream.example/v1/chat/completions", upstream.lastReq.URL.String())
+	require.Equal(t, "video_url", gjson.GetBytes(upstream.lastBody, "messages.0.content.1.type").String())
+	require.True(t, strings.HasPrefix(gjson.GetBytes(upstream.lastBody, "messages.0.content.1.video_url.url").String(), "https://"))
+	require.Equal(t, 1, store.puts)
+	require.Equal(t, "response", gjson.Get(rec.Body.String(), "object").String())
+	require.Equal(t, "ok", gjson.Get(rec.Body.String(), "output.0.content.0.text").String())
+}
 
 func TestForwardResponses_ForceChatCompletionsRoutesNonStreamingToChatCompletions(t *testing.T) {
 	gin.SetMode(gin.TestMode)

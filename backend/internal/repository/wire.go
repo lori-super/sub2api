@@ -151,6 +151,9 @@ var ProviderSet = wire.NewSet(
 	// Image storage (async image task result offload)
 	ProvideImageStorageFactory,
 
+	// Media bridge storage (administrator-managed dedicated R2)
+	ProvideMediaBridgeInlineStoreFactory,
+
 	// HTTP service ports (DI Strategy A: return interface directly)
 	NewTurnstileVerifier,
 	NewTencentCaptchaVerifier,
