@@ -652,6 +652,9 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 		}
 	}
 	if len(result) > 0 {
+		if a.Platform == domain.PlatformOpenAI || a.Platform == domain.PlatformDeepseek {
+			applyDeepSeekUndatedAliases(result)
+		}
 		if a.Platform == domain.PlatformAntigravity {
 			ensureAntigravityDefaultPassthroughs(result, []string{
 				"gemini-3-flash",
@@ -679,6 +682,51 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 		return xai.DefaultModelMapping()
 	}
 	return nil
+}
+
+// applyDeepSeekUndatedAliases exposes the stable public DeepSeek V4 names when
+// an OpenAI-compatible account is configured only with the dated upstream
+// model IDs. Some relays publish deepseek-v4-pro-0813 / -flash-0731 while our
+// public catalog and clients use the undated names. Deriving the aliases here
+// keeps the account whitelist, model listing, scheduling diagnosis, and the
+// forwarded model ID in sync without opening the whitelist to unknown models.
+// Explicit aliases and wildcard mappings always win.
+func applyDeepSeekUndatedAliases(mapping map[string]string) {
+	aliases := []struct {
+		alias     string
+		versioned string
+	}{
+		{alias: "deepseek-v4-pro", versioned: deepSeekVersionedModelForUndatedAlias("deepseek-v4-pro")},
+		{alias: "deepseek-v4-flash", versioned: deepSeekVersionedModelForUndatedAlias("deepseek-v4-flash")},
+	}
+
+	for _, candidate := range aliases {
+		if _, exists := mapping[candidate.alias]; exists {
+			continue
+		}
+		if mappingHasWildcardForModel(mapping, candidate.alias) {
+			continue
+		}
+		target, exists := mapping[candidate.versioned]
+		if !exists || strings.TrimSpace(target) == "" {
+			continue
+		}
+		mapping[candidate.alias] = target
+	}
+}
+
+// deepSeekVersionedModelForUndatedAlias returns the upstream model ID used by
+// relays that publish only dated DeepSeek V4 builds. An empty result means the
+// model is not one of the stable public aliases.
+func deepSeekVersionedModelForUndatedAlias(model string) string {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "deepseek-v4-pro":
+		return "deepseek-v4-pro-0813"
+	case "deepseek-v4-flash":
+		return "deepseek-v4-flash-0731"
+	default:
+		return ""
+	}
 }
 
 func mapPtr(m map[string]any) uintptr {

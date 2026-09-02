@@ -1403,26 +1403,24 @@ func ChatUsageToResponsesUsage(usage *ChatUsage) *ResponsesUsage {
 	if usage == nil {
 		return nil
 	}
+	inputTokens, _, cacheReadTokens, cacheCreationTokens := chatPromptUsageBuckets(usage)
 	out := &ResponsesUsage{
-		InputTokens:  usage.PromptTokens,
+		InputTokens:  inputTokens,
 		OutputTokens: usage.CompletionTokens,
 		TotalTokens:  usage.TotalTokens,
 	}
 	if out.TotalTokens == 0 {
 		out.TotalTokens = out.InputTokens + out.OutputTokens
 	}
-	if usage.PromptTokensDetails != nil && (usage.PromptTokensDetails.CachedTokens > 0 ||
-		usage.PromptTokensDetails.CacheCreationTokens > 0 || usage.PromptTokensDetails.CacheWriteTokens > 0) {
+	if cacheReadTokens > 0 || cacheCreationTokens > 0 {
 		out.InputTokensDetails = &ResponsesInputTokensDetails{
-			CachedTokens:        usage.PromptTokensDetails.CachedTokens,
-			CacheCreationTokens: usage.PromptTokensDetails.CacheCreationTokens,
-			CacheWriteTokens:    usage.PromptTokensDetails.CacheWriteTokens,
+			CachedTokens: cacheReadTokens,
 		}
-		if usage.PromptTokensDetails.CacheWriteTokens > 0 {
-			out.CacheCreationInputTokens = usage.PromptTokensDetails.CacheWriteTokens
-		} else {
-			out.CacheCreationInputTokens = usage.PromptTokensDetails.CacheCreationTokens
+		if usage.PromptTokensDetails != nil {
+			out.InputTokensDetails.CacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokens
+			out.InputTokensDetails.CacheWriteTokens = usage.PromptTokensDetails.CacheWriteTokens
 		}
+		out.CacheCreationInputTokens = cacheCreationTokens
 	}
 	return out
 }

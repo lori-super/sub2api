@@ -1482,6 +1482,17 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 	if inputTokens == 0 {
 		inputTokens = value.Get("prompt_tokens").Int()
 	}
+	// DeepSeek exposes prompt_cache_hit_tokens and prompt_cache_miss_tokens as
+	// a mutually-exclusive partition of the total prompt token count. Keep
+	// InputTokens in our canonical "total prompt" shape: RecordUsage subtracts
+	// cache-read/cache-write details exactly once to derive ordinary input.
+	// Some compatible upstreams omit prompt_tokens while retaining this
+	// partition, so reconstruct the total only when it is absent.
+	cacheHitTokens, cacheHitPresent := nonNegativeGJSONIntWithPresence(value.Get("prompt_cache_hit_tokens"))
+	cacheMissTokens, cacheMissPresent := nonNegativeGJSONIntWithPresence(value.Get("prompt_cache_miss_tokens"))
+	if inputTokens == 0 && (cacheHitPresent || cacheMissPresent) {
+		inputTokens = int64(cacheHitTokens + cacheMissTokens)
+	}
 	outputTokens := value.Get("output_tokens").Int()
 	if outputTokens == 0 {
 		outputTokens = value.Get("completion_tokens").Int()
@@ -1529,12 +1540,24 @@ func openAICacheReadTokensFromUsage(value gjson.Result) int {
 			return max(int(nested.Int()), 0)
 		}
 	}
+	// Preserve an explicit DeepSeek zero so it remains authoritative over
+	// looser compatibility aliases that may coexist in the response.
+	if hitTokens, ok := nonNegativeGJSONIntWithPresence(value.Get("prompt_cache_hit_tokens")); ok {
+		return hitTokens
+	}
 
 	return firstPositiveGJSONInt(
 		value.Get("cache_read_input_tokens"),
 		value.Get("cache_read_tokens"),
 		value.Get("cached_tokens"),
 	)
+}
+
+func nonNegativeGJSONIntWithPresence(value gjson.Result) (int, bool) {
+	if !value.Exists() {
+		return 0, false
+	}
+	return max(int(value.Int()), 0), true
 }
 
 func openAICacheCreationTokensFromUsage(value gjson.Result) int {
