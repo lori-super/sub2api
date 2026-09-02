@@ -443,6 +443,12 @@ type OverloadCooldownSettings struct {
 	CooldownMinutes int  `json:"cooldown_minutes"`
 }
 
+// OpenAITransportErrorCooldownSettings persistent network failure cooldown DTO.
+type OpenAITransportErrorCooldownSettings struct {
+	Enabled         bool `json:"enabled"`
+	CooldownSeconds int  `json:"cooldown_seconds"`
+}
+
 // RateLimit429CooldownSettings 429默认回避配置 DTO
 type RateLimit429CooldownSettings struct {
 	Enabled         bool `json:"enabled"`

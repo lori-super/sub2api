@@ -534,6 +534,9 @@ const (
 
 	// SettingKeyOverloadCooldownSettings stores JSON config for 529 overload cooldown handling.
 	SettingKeyOverloadCooldownSettings = "overload_cooldown_settings"
+	// SettingKeyOpenAITransportErrorCooldownSettings stores the runtime policy for
+	// temporarily unscheduling OpenAI-compatible accounts after persistent network failures.
+	SettingKeyOpenAITransportErrorCooldownSettings = "openai_transport_error_cooldown_settings"
 
 	// SettingKeyRateLimit429CooldownSettings stores JSON config for 429 fallback cooldown handling.
 	SettingKeyRateLimit429CooldownSettings = "rate_limit_429_cooldown_settings"

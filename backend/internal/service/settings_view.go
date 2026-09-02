@@ -558,6 +558,14 @@ type OverloadCooldownSettings struct {
 	CooldownMinutes int `json:"cooldown_minutes"`
 }
 
+// OpenAITransportErrorCooldownSettings controls whether persistent transport
+// failures (for example connection refused or DNS failure) temporarily remove
+// an OpenAI-compatible account from scheduling.
+type OpenAITransportErrorCooldownSettings struct {
+	Enabled         bool `json:"enabled"`
+	CooldownSeconds int  `json:"cooldown_seconds"`
+}
+
 // RateLimit429CooldownSettings 429默认回避配置
 type RateLimit429CooldownSettings struct {
 	// Enabled 是否在无法解析上游重置时间时应用默认429回避
@@ -598,6 +606,15 @@ func DefaultOverloadCooldownSettings() *OverloadCooldownSettings {
 	return &OverloadCooldownSettings{
 		Enabled:         true,
 		CooldownMinutes: 10,
+	}
+}
+
+// DefaultOpenAITransportErrorCooldownSettings preserves the official behavior
+// for installations that have not saved an explicit runtime policy.
+func DefaultOpenAITransportErrorCooldownSettings() *OpenAITransportErrorCooldownSettings {
+	return &OpenAITransportErrorCooldownSettings{
+		Enabled:         true,
+		CooldownSeconds: 600,
 	}
 }
 

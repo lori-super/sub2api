@@ -623,6 +623,9 @@ func registerSettingsRoutes(
 		// 529过载冷却配置
 		adminSettings.GET("/overload-cooldown", h.Admin.Setting.GetOverloadCooldownSettings)
 		adminSettings.PUT("/overload-cooldown", h.Admin.Setting.UpdateOverloadCooldownSettings)
+		// OpenAI-compatible persistent transport failure cooldown (hot reload)
+		adminSettings.GET("/openai-transport-error-cooldown", h.Admin.Setting.GetOpenAITransportErrorCooldownSettings)
+		adminSettings.PUT("/openai-transport-error-cooldown", h.Admin.Setting.UpdateOpenAITransportErrorCooldownSettings)
 		// 429默认回避配置
 		adminSettings.GET("/rate-limit-429-cooldown", h.Admin.Setting.GetRateLimit429CooldownSettings)
 		adminSettings.PUT("/rate-limit-429-cooldown", h.Admin.Setting.UpdateRateLimit429CooldownSettings)
