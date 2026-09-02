@@ -91,7 +91,7 @@ func TestMediaBridgeMemoryPolicyMinFreeAndSoftLimits(t *testing.T) {
 			settings.setProtection(tt.protection)
 			policy := NewMediaBridgeMemoryPolicy(settings, fixedMediaBridgeMemoryProbe(tt.sample))
 			err := policy.CheckMediaBridgeCapacity(context.Background(), MediaBridgeCapacityPolicyInput{DecodedBytes: 1})
-			requireMediaBridgeMemoryCapacityError(t, err, tt.reason)
+			_ = requireMediaBridgeMemoryCapacityError(t, err, tt.reason)
 		})
 	}
 }
@@ -125,7 +125,7 @@ func TestMediaBridgeMemoryPolicyIncludesAtomicallyReservedBytes(t *testing.T) {
 			Global: MediaBridgeCapacityUsage{InflightRequests: 1, InflightDecodedBytes: 150},
 		},
 	})
-	requireMediaBridgeMemoryCapacityError(t, err, MediaBridgeCapacityReasonMemorySoft)
+	_ = requireMediaBridgeMemoryCapacityError(t, err, MediaBridgeCapacityReasonMemorySoft)
 }
 
 func TestMediaBridgeMemoryPolicyUsesHotProtectionSnapshot(t *testing.T) {
@@ -139,7 +139,7 @@ func TestMediaBridgeMemoryPolicyUsesHotProtectionSnapshot(t *testing.T) {
 
 	require.NoError(t, policy.CheckMediaBridgeCapacity(context.Background(), input))
 	settings.setProtection(MediaBridgeProtectionSettings{MemoryHardLimitPercent: 80})
-	requireMediaBridgeMemoryCapacityError(
+	_ = requireMediaBridgeMemoryCapacityError(
 		t,
 		policy.CheckMediaBridgeCapacity(context.Background(), input),
 		MediaBridgeCapacityReasonMemoryHard,
@@ -154,7 +154,7 @@ func TestMediaBridgeMemoryPolicyProbeFailureFailsClosed(t *testing.T) {
 	}))
 
 	err := policy.CheckMediaBridgeCapacity(context.Background(), MediaBridgeCapacityPolicyInput{DecodedBytes: 1})
-	requireMediaBridgeMemoryCapacityError(t, err, MediaBridgeCapacityReasonMemoryUnavailable)
+	_ = requireMediaBridgeMemoryCapacityError(t, err, MediaBridgeCapacityReasonMemoryUnavailable)
 }
 
 func TestResolveMediaBridgeMemorySampleUsesOneScope(t *testing.T) {

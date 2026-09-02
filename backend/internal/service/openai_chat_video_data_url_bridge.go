@@ -1497,8 +1497,8 @@ func (s *OpenAIChatVideoBridgeSession) materializeOne(ctx context.Context, dataU
 // still share one temporary object.
 func (s *OpenAIChatVideoBridgeSession) materializeBareMP4Base64(ctx context.Context, payload []byte, occurrence string) (openAIChatVideoCachedObject, error) {
 	digestSource := sha256.New()
-	digestSource.Write([]byte(openAIChatVideoMP4DataURLPrefix))
-	digestSource.Write(payload)
+	_, _ = digestSource.Write([]byte(openAIChatVideoMP4DataURLPrefix))
+	_, _ = digestSource.Write(payload)
 	var digest [sha256.Size]byte
 	digestSource.Sum(digest[:0])
 	cacheKey := s.openAIChatVideoCacheKey(digest, occurrence)
