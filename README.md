@@ -1,3 +1,5 @@
+> **万模（Wanmo API）定制版** · Repository: [lori-super/wanmo-sub2api](https://github.com/lori-super/wanmo-sub2api) · Service: [api.llmroute.cc](https://api.llmroute.cc). Based on [Wei-Shaw/Sub2API](https://github.com/Wei-Shaw/sub2api); the upstream documentation follows below.
+
 <div align="center">
 
 <img src="assets/logo.svg" alt="Sub2API Logo" width="128" />
