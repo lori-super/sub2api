@@ -25,8 +25,8 @@ func TestDisplayPricingRepositoryDeleteProviderCascadesAndReportsModelCount(t *t
 
 	for i := 0; i < 2; i++ {
 		_, err := integrationDB.ExecContext(ctx, `
-			INSERT INTO display_model_prices (platform, model_name, provider, billing_mode, currency)
-			VALUES ('openai', $1, $2, 'token', 'USD')`, fmt.Sprintf("cascade-model-%d", i), providerKey)
+			INSERT INTO display_model_prices (platform, model_name, provider, billing_mode, currency, enabled)
+			VALUES ('openai', $1, $2, 'token', 'USD', FALSE)`, fmt.Sprintf("cascade-model-%d", i), providerKey)
 		require.NoError(t, err)
 	}
 

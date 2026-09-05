@@ -121,7 +121,8 @@ func (s *OpenAIGatewayService) bufferRawChatStreamResponse(c *gin.Context, respo
 				if choice["finish_reason"] != nil && len(delta) > 0 {
 					return fmt.Errorf("Upstream chat choice changed after completion")
 				}
-				if err := mergeBufferedChatDelta(choice["message"].(map[string]any), delta); err != nil {
+				message, _ := choice["message"].(map[string]any)
+				if err := mergeBufferedChatDelta(message, delta); err != nil {
 					return err
 				}
 			}
@@ -203,13 +204,14 @@ func (s *OpenAIGatewayService) bufferRawChatStreamResponse(c *gin.Context, respo
 		if choice == nil || choice["finish_reason"] == nil {
 			return fail("Upstream chat stream omitted a choice finish reason")
 		}
-		message := choice["message"].(map[string]any)
+		message, _ := choice["message"].(map[string]any)
 		if tools, ok := message["tool_calls"].([]any); ok {
 			sort.Slice(tools, func(i, j int) bool {
 				return tools[i].(map[string]any)["index"].(float64) < tools[j].(map[string]any)["index"].(float64)
 			})
 			for _, tool := range tools {
-				delete(tool.(map[string]any), "index")
+				item, _ := tool.(map[string]any)
+				delete(item, "index")
 			}
 		}
 		ordered = append(ordered, choice)
@@ -244,19 +246,19 @@ func mergeBufferedChatDelta(target, delta map[string]any) error {
 		switch key {
 		case "content", "reasoning_content", "refusal", "arguments", "name", "id", "role", "type":
 			if _, ok := value.(string); !ok {
-				return fmt.Errorf("Invalid upstream chat text field")
+				return fmt.Errorf("invalid upstream chat text field")
 			}
 		}
 		if key == "tool_calls" {
 			incoming, ok := value.([]any)
 			if !ok {
-				return fmt.Errorf("Invalid upstream tool calls")
+				return fmt.Errorf("invalid upstream tool calls")
 			}
 			tools, _ := target[key].([]any)
 			for _, entry := range incoming {
 				tool, ok := entry.(map[string]any)
 				if !ok {
-					return fmt.Errorf("Invalid upstream tool call")
+					return fmt.Errorf("invalid upstream tool call")
 				}
 				index, ok := tool["index"].(float64)
 				if !ok || index < 0 || index != float64(int(index)) {
@@ -293,11 +295,11 @@ func mergeBufferedChatDelta(target, delta map[string]any) error {
 			if !ok {
 				builder = &strings.Builder{}
 				if previous, ok := target[key].(string); ok {
-					builder.WriteString(previous)
+					_, _ = builder.WriteString(previous)
 				}
 				target[key] = builder
 			}
-			builder.WriteString(fragment)
+			_, _ = builder.WriteString(fragment)
 		case map[string]any:
 			current, _ := target[key].(map[string]any)
 			if current == nil {
