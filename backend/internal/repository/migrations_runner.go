@@ -64,6 +64,8 @@ const usageLogsEffectiveRequestedModelIndex = "idx_usage_logs_effective_requeste
 const usageLogsEffectiveUpstreamModelIndex = "idx_usage_logs_effective_upstream_model_created"
 const upstreamPriceUsageWindowIndexMigration = "236_upstream_price_monitor_usage_window_index_notx.sql"
 const upstreamPriceUsageWindowIndex = "idx_usage_logs_account_id_id"
+const usageLogsUpstreamRequestIDIndexMigration = "233_add_usage_log_upstream_request_id_index_notx.sql"
+const usageLogsUpstreamRequestIDIndex = "idx_usage_logs_upstream_request_id"
 
 type migrationChecksumCompatibilityRule struct {
 	fileChecksum       string
@@ -309,6 +311,8 @@ func prepareNonTransactionalMigration(ctx context.Context, db migrationConnectio
 		return nil
 	case upstreamPriceUsageWindowIndexMigration:
 		return dropInvalidIndexIfPresent(ctx, db, upstreamPriceUsageWindowIndex)
+	case usageLogsUpstreamRequestIDIndexMigration:
+		return dropInvalidIndexIfPresent(ctx, db, usageLogsUpstreamRequestIDIndex)
 	default:
 		return nil
 	}
