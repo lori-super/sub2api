@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -192,7 +193,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func(body io.ReadCloser) { _ = body.Close() }(resp.Body)
 
 	// 7. Handle error response with failover
 	if resp.StatusCode >= 400 {
