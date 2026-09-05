@@ -142,7 +142,15 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		}
 	}
 
-	if clientStream {
+	bufferUpstreamStream := shouldBufferRawChatStream(account, upstreamModel, clientStream)
+	upstreamStream := clientStream || bufferUpstreamStream
+	if bufferUpstreamStream {
+		upstreamBody, err = sjson.SetBytes(upstreamBody, "stream", true)
+		if err != nil {
+			return nil, fmt.Errorf("enable buffered upstream stream: %w", err)
+		}
+	}
+	if upstreamStream {
 		var usageErr error
 		upstreamBody, usageErr = ensureOpenAIChatStreamUsage(upstreamBody)
 		if usageErr != nil {
@@ -179,11 +187,11 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if customUA == "" && account.IsGrokOAuth() {
 		customUA = defaultGrokUpstreamUserAgent()
 	}
-	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, clientStream, token, customUA, upstreamCacheIdentity)
+	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, upstreamStream, token, customUA, upstreamCacheIdentity)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 
 	// 7. Handle error response with failover
 	if resp.StatusCode >= 400 {
@@ -236,6 +244,16 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 
 	if account.Platform == PlatformGrok {
 		s.updateGrokUsageFromResponse(withGrokTeamRateLimitModel(ctx, upstreamModel), account, resp.Header, resp.StatusCode)
+	}
+	if bufferUpstreamStream {
+		expectedChoices := int(gjson.GetBytes(upstreamBody, "n").Int())
+		if expectedChoices < 1 {
+			expectedChoices = 1
+		}
+		resp, err = s.bufferRawChatStreamResponse(c, resp, expectedChoices)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 8. Forward response
