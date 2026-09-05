@@ -67,7 +67,7 @@ func (s *OpenAIGatewayService) bufferRawChatStreamResponse(c *gin.Context, respo
 		}
 		var chunk map[string]any
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil || chunk == nil {
-			return fmt.Errorf("Invalid upstream chat stream event")
+			return fmt.Errorf("invalid upstream chat stream event")
 		}
 		if upstreamError, exists := chunk["error"]; exists && upstreamError != nil {
 			upstreamErrorBody = []byte(payload)
@@ -86,26 +86,26 @@ func (s *OpenAIGatewayService) bufferRawChatStreamResponse(c *gin.Context, respo
 			if key == "id" || key == "model" {
 				text, ok := value.(string)
 				if !ok {
-					return fmt.Errorf("Invalid upstream chat stream identity")
+					return fmt.Errorf("invalid upstream chat stream identity")
 				}
 				if previous, ok := root[key].(string); ok && previous != text {
-					return fmt.Errorf("Inconsistent upstream chat stream identity")
+					return fmt.Errorf("inconsistent upstream chat stream identity")
 				}
 			}
 			root[key] = value
 		}
 		rawChoices, ok := chunk["choices"].([]any)
 		if !ok {
-			return fmt.Errorf("Invalid upstream chat stream choices")
+			return fmt.Errorf("invalid upstream chat stream choices")
 		}
 		for _, rawChoice := range rawChoices {
 			item, ok := rawChoice.(map[string]any)
 			if !ok {
-				return fmt.Errorf("Invalid upstream chat choice")
+				return fmt.Errorf("invalid upstream chat choice")
 			}
 			indexValue, ok := item["index"].(float64)
 			if !ok || indexValue < 0 || indexValue >= float64(expectedChoices) || indexValue != float64(int(indexValue)) {
-				return fmt.Errorf("Invalid upstream chat choice index")
+				return fmt.Errorf("invalid upstream chat choice index")
 			}
 			index := int(indexValue)
 			choice := choices[index]
@@ -116,10 +116,10 @@ func (s *OpenAIGatewayService) bufferRawChatStreamResponse(c *gin.Context, respo
 			if rawDelta := item["delta"]; rawDelta != nil {
 				delta, ok := rawDelta.(map[string]any)
 				if !ok {
-					return fmt.Errorf("Invalid upstream chat delta")
+					return fmt.Errorf("invalid upstream chat delta")
 				}
 				if choice["finish_reason"] != nil && len(delta) > 0 {
-					return fmt.Errorf("Upstream chat choice changed after completion")
+					return fmt.Errorf("upstream chat choice changed after completion")
 				}
 				message, _ := choice["message"].(map[string]any)
 				if err := mergeBufferedChatDelta(message, delta); err != nil {
@@ -141,7 +141,7 @@ func (s *OpenAIGatewayService) bufferRawChatStreamResponse(c *gin.Context, respo
 					}
 					items, ok := entries.([]any)
 					if !ok {
-						return fmt.Errorf("Invalid upstream chat logprobs")
+						return fmt.Errorf("invalid upstream chat logprobs")
 					}
 					previous, _ := current[field].([]any)
 					current[field] = append(previous, items...)
@@ -207,7 +207,11 @@ func (s *OpenAIGatewayService) bufferRawChatStreamResponse(c *gin.Context, respo
 		message, _ := choice["message"].(map[string]any)
 		if tools, ok := message["tool_calls"].([]any); ok {
 			sort.Slice(tools, func(i, j int) bool {
-				return tools[i].(map[string]any)["index"].(float64) < tools[j].(map[string]any)["index"].(float64)
+				left, _ := tools[i].(map[string]any)
+				right, _ := tools[j].(map[string]any)
+				leftIndex, _ := left["index"].(float64)
+				rightIndex, _ := right["index"].(float64)
+				return leftIndex < rightIndex
 			})
 			for _, tool := range tools {
 				item, _ := tool.(map[string]any)
@@ -262,11 +266,11 @@ func mergeBufferedChatDelta(target, delta map[string]any) error {
 				}
 				index, ok := tool["index"].(float64)
 				if !ok || index < 0 || index != float64(int(index)) {
-					return fmt.Errorf("Invalid upstream tool call index")
+					return fmt.Errorf("invalid upstream tool call index")
 				}
 				var current map[string]any
 				for _, existing := range tools {
-					candidate := existing.(map[string]any)
+					candidate, _ := existing.(map[string]any)
 					if candidate["index"] == index {
 						current = candidate
 						break
